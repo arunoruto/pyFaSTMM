@@ -1,0 +1,54 @@
+[project]
+name = "pyfastmm"
+version = "0.1.0"
+description = "Python bindings for FaSTMM2 (Fast Superposition T-Matrix Method, MLFMM-accelerated)"
+readme = "README.md"
+requires-python = ">=3.12"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "pyfastmm contributors" }]
+keywords = ["t-matrix", "scattering", "electromagnetics", "mie", "optics", "mlfmm"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Science/Research",
+  "Topic :: Scientific/Engineering :: Physics",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Fortran",
+]
+dependencies = ["numpy>=1.25"]
+
+[project.optional-dependencies]
+dev = ["pytest>=7", "pytest-cov", "meson>=1.1", "ninja", "meson-python>=0.15", "h5py>=3.0"]
+dashboard = ["streamlit>=1.28", "pandas>=2.0", "plotly>=5.0"]
+
+[project.urls]
+Repository = "https://github.com/arunoruto/pyFaSTMM"
+
+[tool.pyright]
+exclude = [".venv"]
+venvPath = "."
+venv = ".venv"
+
+[tool.uv]
+# meson-python's editable-install loader hardcodes the absolute path to
+# `ninja` (and the meson build dir) that it saw *during the build* into
+# `_pyfastmm_editable_loader.py`, and reuses that exact path on every
+# subsequent `import pyfastmm` to auto-rebuild the extension if sources
+# changed. If pyfastmm is built in `uv`'s default *isolated* build
+# environment, that environment (and the ninja binary in it) is deleted
+# right after the build finishes, so every later import fails with
+# "No such file or directory: .../ninja". Building without isolation
+# instead means the build happens in this project's own persistent venv
+# (which has meson/ninja via the `dev` extra above), so the recorded path
+# stays valid for the life of the venv.
+no-build-isolation-package = ["pyfastmm"]
+
+[build-system]
+# meson-python drives meson.build, which in turn shells out to
+# `numpy.f2py -c` (see tools/build_f2py_ext.py) to build the _fastmm_ext
+# extension -- gfortran, LAPACK, meson, ninja, and numpy must be available
+# *before* pyfastmm itself is built (see [tool.uv] no-build-isolation-package
+# above) -- meson/ninja come from the `dev` extra, numpy from the runtime
+# dependencies, gfortran/LAPACK from the devenv/nix shell.
+requires = ["meson-python>=0.15", "numpy>=1.25"]
+build-backend = "mesonpy"
