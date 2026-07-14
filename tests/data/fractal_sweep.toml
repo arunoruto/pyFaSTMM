@@ -1,0 +1,31 @@
+[particles]
+positions_file = "fractal_N128_Df2.0.dat"
+scale = 1.0
+gap_factor = 1.0
+refractive_index = [1.5, 0.01]
+
+[wavelengths]
+start = 5.0
+stop = 8.0
+num = 5
+scale = 1.0
+
+[medium]
+refractive_index = [1.0, 0.0]
+
+[incident]
+polar_angle_deg = 0.0
+azimuthal_angle_deg = 0.0
+
+[solver]
+formulation = 2
+acc = 2
+tolerance = 1e-4
+restart = 5
+max_iterations = 50
+N_theta = 91
+N_phi = 8
+N_ave = 0
+
+[output]
+compute_tmatrix = false
