@@ -38,11 +38,24 @@ jobs:
       - name: Setup | Force release branch to be at workflow sha
         run: git reset --hard ${{ github.sha }}
 
+      - name: Setup | Install build dependencies (system)
+        # `uv sync` also builds/installs pyfastmm itself (not just the
+        # `build` extra's own deps), and pyproject.toml's
+        # no-build-isolation-package = ["pyfastmm"] means that build
+        # needs gfortran/lapack/blas already present in *this* venv --
+        # same reason test.yml installs them before syncing.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gfortran liblapack-dev libblas-dev
+
       - name: Setup | Install uv
         uses: astral-sh/setup-uv@v4
 
-      - name: Setup | Install build dependencies
-        run: uv sync --extra build
+      - name: Setup | Install build dependencies (Python)
+        # `dev` for meson/ninja/meson-python (needed to build pyfastmm
+        # itself, see system deps above); `build` for
+        # python-semantic-release.
+        run: uv sync --extra build --extra dev
 
       - name: Evaluate | Verify upstream has NOT changed
         shell: bash
