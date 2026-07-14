@@ -1,0 +1,80 @@
+--- a/external/fastmm2/src/gaussquad.f90
++++ b/external/fastmm2/src/gaussquad.f90
+@@ -47,12 +47,12 @@ contains
+     !
+     ! Notes:
+     !   The weights w(i) and abscissas x(i) are computed so that
+-    !     ∫W(x) f(x) dx = ∑_i w(i) f(x(i))
+-    !   exactly for polynomials f of degree ≤ 2n-1.
++    !     integral of W(x) f(x) dx = sum of _i w(i) f(x(i))
++    !   exactly for polynomials f of degree <= 2n-1.
+     !
+     !   Here W(x) is the wieght function associated with the orthogonal
+     !   polynomials p_i(x), i.e.
+-    !     ∫W(x) p_i(x) p_j(x) dx = C_i δ_{i,j}.
++    !     integral of W(x) p_i(x) p_j(x) dx = C_i delta_{i,j}.
+     !   Each type of polynomial corresponds to a particlar weight function W.
+     !
+     !      name         weight function W(x)
+@@ -92,7 +92,7 @@ contains
+ 
+   subroutine cpzm(alpha,name,mu0)
+     ! Calculate
+-    !   μ_0 = ∫W(x)dx,
++    !   mu_0 = integral of W(x)dx,
+     ! the zeroth moment of the wieght function for a given type of classical
+     ! orthgonal polynomial.
+     ! Input:
+@@ -140,9 +140,9 @@ contains
+     ! In general, if
+     !   P_n(x) = (a_n x + b_n) P_{n-1}(x) - c_n P_{n-2}(x)
+     ! Then the n diagonal elements of the matrix are
+-    !   α_i = -b_i/a_i,   i=1,...,n
++    !   alpha_i = -b_i/a_i,   i=1,...,n
+     ! And the n-1 subdiagonal elements are
+-    !   β_i = Sqrt(c_{i+1}/(a_i a_{i+1})),  i=1,...,n-1.
++    !   beta_i = Sqrt(c_{i+1}/(a_i a_{i+1})),  i=1,...,n-1.
+ 
+     if (name == "Legendre") then
+        ! Legendre polynomials:
+@@ -152,22 +152,22 @@ contains
+        !   b_n = 0
+        !   c_n = (n-1)/n.
+        ! So
+-       !   α_i = -b_i/a_i = 0
+-       !   β_i = Sqrt(i^2/[(2i-1)(2i+1)])
++       !   alpha_i = -b_i/a_i = 0
++       !   beta_i = Sqrt(i^2/[(2i-1)(2i+1)])
+        diag = 0._rk
+        do i=1,n-1
+           subdiag(i) = sqrt(i**2 / ((2*i-1._rk)*(2*i+1._rk)))
+        end do
+     else if (name == "Laguerre") then
+        ! Associated Laguerre polynomials:
+-       !   L^{α}_n(x) = (a_n x + b_n) L^{α}_{n-1}(x) - c_n L^{α}_{n-2}(x)
++       !   L^{alpha}_n(x) = (a_n x + b_n) L^{alpha}_{n-1}(x) - c_n L^{alpha}_{n-2}(x)
+        ! where
+        !   a_n = -1/n
+-       !   b_n = (α + 2n-1)/n
+-       !   c_n = (α + n-1)/n
++       !   b_n = (alpha + 2n-1)/n
++       !   c_n = (alpha + n-1)/n
+        ! So
+-       !   α_i = (α + 2i-1)
+-       !   β_i = sqrt((α+i)i)
++       !   alpha_i = (alpha + 2i-1)
++       !   beta_i = sqrt((alpha+i)i)
+        do i=1,n
+           diag(i) = alpha+2*i-1
+        end do
+@@ -182,8 +182,8 @@ contains
+        !   b_n = 0
+        !   c_n = 2*(n-1)
+        ! So
+-       !   α_i = 0
+-       !   β_i = sqrt(i/2)
++       !   alpha_i = 0
++       !   beta_i = sqrt(i/2)
+        diag = 0._rk
+        do i=1,n-1
+           subdiag(i) = sqrt(i/2._rk)
