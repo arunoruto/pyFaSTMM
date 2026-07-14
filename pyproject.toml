@@ -18,8 +18,8 @@ classifiers = [
 dependencies = ["numpy>=1.25"]
 
 [project.optional-dependencies]
-dev = ["pytest>=7", "pytest-cov", "meson>=1.1", "ninja", "meson-python>=0.15", "h5py>=3.0"]
-dashboard = ["streamlit>=1.28", "pandas>=2.0", "plotly>=5.0"]
+dev = ["pytest>=7", "pytest-cov", "meson>=1.1", "ninja", "meson-python>=0.15", "h5py>=3.0", "pydantic>=2.0"]
+dashboard = ["streamlit>=1.28", "pandas>=2.0", "plotly>=5.0", "pydantic>=2.0"]
 
 [project.urls]
 Repository = "https://github.com/arunoruto/pyFaSTMM"
