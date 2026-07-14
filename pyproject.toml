@@ -1,6 +1,6 @@
 [project]
 name = "pyfastmm"
-version = "0.1.0"
+version = "1.0.0"
 description = "Python bindings for FaSTMM2 (Fast Superposition T-Matrix Method, MLFMM-accelerated)"
 readme = "README.md"
 # Lowered from >=3.12 to match pymstm's floor -- no cp311-specific issue

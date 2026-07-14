@@ -3,4 +3,4 @@
 from pyfastmm._fastmm import FaSTMM2, get_tmatrix_size
 
 __all__ = ["FaSTMM2", "get_tmatrix_size"]
-__version__ = "0.1.0"
+__version__ = "1.0.0"
