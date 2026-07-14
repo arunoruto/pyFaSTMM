@@ -1,0 +1,39 @@
+name: Testing
+on:
+  workflow_call:
+  workflow_dispatch:
+  pull_request:
+  push:
+    branches: [main]
+jobs:
+  unittest:
+    name: PyTest
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Install build dependencies
+        # gfortran/lapack/blas: needed for `uv sync` to build the f2py
+        # extension (meson-python drives numpy.f2py -c against
+        # external/fastmm2/, see meson.build). cmake/libhdf5-dev: only
+        # for the standalone CLI reference binary (make cli), which
+        # keeps building the *unmodified* upstream sources including
+        # io.f90/HDF5, unlike the Python extension itself.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gfortran liblapack-dev libblas-dev cmake libhdf5-dev
+      - name: Install uv
+        id: setup-python
+        uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+      - name: Install dependencies (builds the f2py extension)
+        run: uv sync --extra dev
+      - name: Build the standalone FaSTMM2 CLI reference binary
+        # test_compatibility.py skips itself if this isn't present -- but
+        # we want that cross-check to actually run in CI, not silently
+        # skip.
+        run: make cli
+      - name: Test with pytest
+        run: uv run pytest tests/ -v

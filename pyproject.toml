@@ -20,6 +20,7 @@ dependencies = ["numpy>=1.25"]
 [project.optional-dependencies]
 dev = ["pytest>=7", "pytest-cov", "meson>=1.1", "ninja", "meson-python>=0.15", "h5py>=3.0", "pydantic>=2.0"]
 dashboard = ["streamlit>=1.28", "pandas>=2.0", "plotly>=5.0", "pydantic>=2.0"]
+build = ["python-semantic-release ~= 10.0"]
 
 [project.urls]
 Repository = "https://github.com/arunoruto/pyFaSTMM"
@@ -28,6 +29,24 @@ Repository = "https://github.com/arunoruto/pyFaSTMM"
 exclude = [".venv"]
 venvPath = "."
 venv = ".venv"
+
+[tool.semantic_release]
+version_variables = ["src/pyfastmm/__init__.py:__version__"]
+version_toml = ["pyproject.toml:project.version"]
+major_on_zero = false
+# Only the sdist here -- compiled wheels need a per-platform toolchain
+# (gfortran/LAPACK/BLAS, on Linux/macOS separately) that doesn't fit in
+# this single job. .github/workflows/publish.yml's build_wheels job
+# builds the actual wheels afterwards, against the tag this bump
+# creates, via cibuildwheel.
+build_command = """
+    uv lock --upgrade-package "$PACKAGE_NAME"
+    git add uv.lock
+    uv build --sdist
+"""
+
+[tool.semantic_release.branches.main]
+match = "main"
 
 [tool.uv]
 # meson-python's editable-install loader hardcodes the absolute path to
