@@ -1,19 +1,23 @@
 """
 pyFaSTMM Dashboard.
 
-Two modes, as tabs:
+Two modes, as tabs -- each tab owns its *own* configuration controls (no
+shared sidebar), so switching tabs never leaves stale or irrelevant
+widgets from the other mode on screen:
 
-- **Single run**: configure a cluster of spheres in the sidebar, run
-  FaSTMM2 in-process (no files), and visualize the resulting Mueller-
-  matrix phase function (P11) and degree of linear polarization
-  (-P12/P11) vs scattering angle. Optionally cross-check against the
-  standalone FaSTMM2 CLI binary (build/cli/FaSTMM2, via ``make cli``) on
-  the same geometry.
+- **Single run**: configure a cluster of spheres, run FaSTMM2 in-process
+  (no files), and visualize the resulting Mueller-matrix phase function
+  (P11) and degree of linear polarization (-P12/P11) vs scattering angle.
 - **Wavelength sweep**: load a TOML sweep config (same shape as pyMSTM's
   -- see pyfastmm._config) pointing at a cluster file (e.g. a PyFracVAL
   fractal aggregate with hundreds of particles) and a wavelength range,
   run FaSTMM2 once per wavelength, and plot the resulting cross-section
   spectrum plus the angular Mueller matrix at any wavelength in the sweep.
+
+Both tabs always cross-check against the standalone FaSTMM2 CLI binary
+(build/cli/FaSTMM2, via ``make cli``) when it's available -- comparing
+against the reference implementation is the whole point of this
+dashboard, so it isn't an opt-in checkbox.
 """
 
 from __future__ import annotations
@@ -33,13 +37,21 @@ from pyfastmm import FaSTMM2
 _PROJ_ROOT = Path(__file__).resolve().parent.parent
 _CLI_BIN = _PROJ_ROOT / "build" / "cli" / "FaSTMM2"
 _DATA_DIR = _PROJ_ROOT / "tests" / "data"
+_CLI_AVAILABLE = _CLI_BIN.is_file()
 
 st.set_page_config(page_title="pyFaSTMM Dashboard", layout="wide")
 st.title("pyFaSTMM Dashboard")
 st.caption(
     "Compute Mueller-matrix scattering from a cluster of spheres via "
-    "FaSTMM2's MLFMM solver, entirely in-process -- no input/output files."
+    "FaSTMM2's MLFMM solver, entirely in-process -- no input/output files. "
+    "Always cross-checked against the standalone CLI reference."
 )
+if not _CLI_AVAILABLE:
+    st.warning(
+        "CLI reference binary not found at build/cli/FaSTMM2 -- results "
+        "won't be cross-checked. Run `make cli` (needs CMake, LAPACK, "
+        "HDF5) to enable it."
+    )
 
 tab_single, tab_sweep = st.tabs(["Single run", "Wavelength sweep (TOML config)"])
 
@@ -49,6 +61,8 @@ tab_single, tab_sweep = st.tabs(["Single run", "Wavelength sweep (TOML config)"]
 
 
 def _run_cli(coords, radii, eps, k, N_theta, N_phi, N_ave, formulation, acc, tol, restart, max_iter):
+    """Run the CLI reference binary on one geometry/wavenumber, return
+    (mueller, crs_dict) in the same shape as FaSTMM2.solve()'s result."""
     import h5py
 
     with tempfile.TemporaryDirectory() as tmp:
@@ -72,7 +86,12 @@ def _run_cli(coords, radii, eps, k, N_theta, N_phi, N_ave, formulation, acc, tol
         subprocess.run(args, cwd=tmp, capture_output=True, check=True)
 
         with h5py.File(s_out) as f:
-            return f["mueller"][()].T, f["cross_sections"][()]
+            mueller = f["mueller"][()].T
+            crs = f["cross_sections"][()]
+    return mueller, {
+        "c_ext": float(crs[0]), "c_ext_minus_c_abs": float(crs[1]),
+        "c_abs": float(crs[2]), "c_sca": float(crs[3]), "asymmetry": float(crs[4]),
+    }
 
 
 def _phi_slices(mueller, n_phi, n_theta):
@@ -164,284 +183,353 @@ def render_angular_plots(mueller, N_ave, N_phi, N_theta, cli_mueller=None, key="
     st.plotly_chart(fig_dolp, width="stretch", key=f"{key}_dolp")
 
 
+def render_cross_section_metrics(result, cli_result=None):
+    labels = ["Cext", "Cabs", "Csca", "Csca (optical thm.)", "Asymmetry <cos theta>"]
+    keys = ["c_ext", "c_abs", "c_sca", "c_ext_minus_c_abs", "asymmetry"]
+    cols = st.columns(len(labels))
+    for col, label, key in zip(cols, labels, keys):
+        delta = None
+        if cli_result is not None:
+            delta = result[key] - cli_result[key]
+        col.metric(label, f"{result[key]:.4f}", delta=f"{delta:+.4f} vs CLI" if delta is not None else None)
+
+
 # ---------------------------------------------------------------------------
 # Tab 1: single run
 # ---------------------------------------------------------------------------
 
-with st.sidebar:
-    st.header("Cluster")
-    preset = st.selectbox(
-        "Preset", ["Single sphere", "Two spheres", "Random cluster"], index=1
-    )
-
-    if preset == "Single sphere":
-        default_df = pd.DataFrame(
-            {
-                "x": [0.0], "y": [0.0], "z": [0.0],
-                "radius": [1.0], "eps_re": [3.0], "eps_im": [0.1],
-            }
-        )
-    elif preset == "Two spheres":
-        default_df = pd.DataFrame(
-            {
-                "x": [-1.5, 1.5], "y": [0.0, 0.0], "z": [0.0, 0.0],
-                "radius": [1.0, 1.0], "eps_re": [3.0, 3.0], "eps_im": [0.1, 0.1],
-            }
-        )
-    else:
-        n_random = st.slider("Number of spheres", 3, 30, 8)
-        rng = np.random.default_rng(0)
-        pos = rng.uniform(-3.0, 3.0, size=(n_random, 3))
-        default_df = pd.DataFrame(
-            {
-                "x": pos[:, 0], "y": pos[:, 1], "z": pos[:, 2],
-                "radius": np.full(n_random, 0.8),
-                "eps_re": np.full(n_random, 3.0),
-                "eps_im": np.full(n_random, 0.1),
-            }
-        )
-
-    sphere_df = st.data_editor(default_df, num_rows="dynamic", key="sphere_table")
-
-    st.header("Incident field / solver")
-    k = st.number_input("Wavenumber k", value=1.2, min_value=0.01, step=0.1)
-    N_theta = st.slider("N_theta", 5, 361, 91, step=2)
-    N_phi = st.slider("N_phi", 1, 32, 8)
-    N_ave = st.number_input(
-        "N_ave (0 = fixed orientation)", value=0, min_value=0, step=1
-    )
-    formulation = st.selectbox(
-        "Formulation", options=[0, 1, 2],
-        format_func=lambda v: {0: "STMM", 1: "FaSTMM", 2: "FaSTMM2"}[v],
-        index=2,
-    )
-    acc = st.slider("MLFMM accuracy (digits)", 1, 6, 2)
-    tol = st.number_input("GMRES tolerance", value=1e-4, format="%.1e")
-    restart = st.number_input("GMRES restart", value=5, min_value=1, step=1)
-    max_iter = st.number_input("GMRES max iterations", value=50, min_value=1, step=1)
-
-    compare_cli = st.checkbox(
-        "Compare against CLI reference",
-        value=False,
-        disabled=not _CLI_BIN.is_file(),
-        help=(
-            "Requires build/cli/FaSTMM2 (run `make cli`) and h5py."
-            if not _CLI_BIN.is_file()
-            else None
-        ),
-    )
-
-    run = st.button("Solve", type="primary")
-
 with tab_single:
-    # The solve itself (and, if requested, the CLI cross-check) only runs
-    # when the Solve button is clicked -- the result is cached in
-    # st.session_state so that later widget interactions (e.g. picking
-    # which phi cut to plot) just rerun the script without recomputing.
-    if run:
-        coords = sphere_df[["x", "y", "z"]].to_numpy(dtype=np.float64)
-        radii = sphere_df["radius"].to_numpy(dtype=np.float64)
-        eps = sphere_df["eps_re"].to_numpy(dtype=np.float64) + 1j * sphere_df[
-            "eps_im"
-        ].to_numpy(dtype=np.float64)
+    config_col, results_col = st.columns([1, 2])
 
-        f = FaSTMM2()
-        with st.spinner("Solving..."):
-            result = f.solve(
-                coords, radii, eps, k,
-                N_theta=int(N_theta), N_phi=int(N_phi), N_ave=int(N_ave),
-                formulation=int(formulation), acc=int(acc), tol=float(tol),
-                restart=int(restart), max_iter=int(max_iter),
-            )
-
-        cli_result = None
-        if compare_cli:
-            try:
-                with st.spinner("Running CLI reference..."):
-                    cli_mueller, cli_crs = _run_cli(
-                        coords, radii, eps, k, N_theta, N_phi, N_ave, formulation,
-                        acc, tol, restart, max_iter,
-                    )
-                cli_result = (cli_mueller, cli_crs)
-            except Exception as exc:  # noqa: BLE001
-                st.error(f"CLI run failed: {exc}")
-
-        st.session_state["dashboard_result"] = {
-            "result": result,
-            "cli_result": cli_result,
-            "N_theta": int(N_theta),
-            "N_phi": int(N_phi),
-            "N_ave": int(N_ave),
-        }
-
-    if "dashboard_result" in st.session_state:
-        state = st.session_state["dashboard_result"]
-        result = state["result"]
-        cli_result = state["cli_result"]
-
-        mueller = result["mueller"]
-
-        col1, col2, col3, col4, col5 = st.columns(5)
-        col1.metric("Cext", f"{result['c_ext']:.4f}")
-        col2.metric("Cabs", f"{result['c_abs']:.4f}")
-        col3.metric("Csca", f"{result['c_sca']:.4f}")
-        col4.metric("Csca (optical thm.)", f"{result['c_ext_minus_c_abs']:.4f}")
-        col5.metric("Asymmetry <cos theta>", f"{result['asymmetry']:.4f}")
-
-        cli_mueller = None
-        if cli_result is not None:
-            cli_mueller, cli_crs = cli_result
-            st.info(
-                f"CLI cross sections: Cext={cli_crs[0]:.4f}, Cabs={cli_crs[2]:.4f}, "
-                f"Csca={cli_crs[3]:.4f}, asymmetry={cli_crs[4]:.4f}"
-            )
-
-        render_angular_plots(
-            mueller, state["N_ave"], state["N_phi"], state["N_theta"],
-            cli_mueller=cli_mueller, key="single_phi_cut",
+    with config_col:
+        st.subheader("Cluster")
+        preset = st.selectbox(
+            "Preset", ["Single sphere", "Two spheres", "Random cluster"], index=1,
+            key="single_preset",
         )
 
-        with st.expander("Raw Mueller matrix"):
-            st.dataframe(mueller)
-    else:
-        st.info("Configure a cluster in the sidebar and click **Solve**.")
+        if preset == "Single sphere":
+            default_df = pd.DataFrame(
+                {
+                    "x": [0.0], "y": [0.0], "z": [0.0],
+                    "radius": [1.0], "eps_re": [3.0], "eps_im": [0.1],
+                }
+            )
+        elif preset == "Two spheres":
+            default_df = pd.DataFrame(
+                {
+                    "x": [-1.5, 1.5], "y": [0.0, 0.0], "z": [0.0, 0.0],
+                    "radius": [1.0, 1.0], "eps_re": [3.0, 3.0], "eps_im": [0.1, 0.1],
+                }
+            )
+        else:
+            n_random = st.slider("Number of spheres", 3, 30, 8, key="single_n_random")
+            rng = np.random.default_rng(0)
+            pos = rng.uniform(-3.0, 3.0, size=(n_random, 3))
+            default_df = pd.DataFrame(
+                {
+                    "x": pos[:, 0], "y": pos[:, 1], "z": pos[:, 2],
+                    "radius": np.full(n_random, 0.8),
+                    "eps_re": np.full(n_random, 3.0),
+                    "eps_im": np.full(n_random, 0.1),
+                }
+            )
+
+        sphere_df = st.data_editor(default_df, num_rows="dynamic", key="sphere_table")
+
+        st.subheader("Incident field / solver")
+        k = st.number_input("Wavenumber k", value=1.2, min_value=0.01, step=0.1, key="single_k")
+        N_theta = st.slider("N_theta", 5, 361, 91, step=2, key="single_ntheta")
+        N_phi = st.slider("N_phi", 1, 32, 8, key="single_nphi")
+        N_ave = st.number_input(
+            "N_ave (0 = fixed orientation)", value=0, min_value=0, step=1, key="single_nave"
+        )
+        formulation = st.selectbox(
+            "Formulation", options=[0, 1, 2],
+            format_func=lambda v: {0: "STMM", 1: "FaSTMM", 2: "FaSTMM2"}[v],
+            index=2, key="single_formulation",
+        )
+        acc = st.slider("MLFMM accuracy (digits)", 1, 6, 2, key="single_acc")
+        tol = st.number_input("GMRES tolerance", value=1e-4, format="%.1e", key="single_tol")
+        restart = st.number_input("GMRES restart", value=5, min_value=1, step=1, key="single_restart")
+        max_iter = st.number_input(
+            "GMRES max iterations", value=50, min_value=1, step=1, key="single_maxiter"
+        )
+
+        run = st.button("Solve", type="primary", key="single_solve")
+
+    with results_col:
+        # The solve itself (and the CLI cross-check) only runs when the
+        # Solve button is clicked -- the result is cached in
+        # st.session_state so that later widget interactions (e.g.
+        # picking which phi cut to plot) just rerun the script without
+        # recomputing.
+        if run:
+            coords = sphere_df[["x", "y", "z"]].to_numpy(dtype=np.float64)
+            radii = sphere_df["radius"].to_numpy(dtype=np.float64)
+            eps = sphere_df["eps_re"].to_numpy(dtype=np.float64) + 1j * sphere_df[
+                "eps_im"
+            ].to_numpy(dtype=np.float64)
+
+            f = FaSTMM2()
+            with st.spinner("Solving (pyfastmm)..."):
+                result = f.solve(
+                    coords, radii, eps, k,
+                    N_theta=int(N_theta), N_phi=int(N_phi), N_ave=int(N_ave),
+                    formulation=int(formulation), acc=int(acc), tol=float(tol),
+                    restart=int(restart), max_iter=int(max_iter),
+                )
+
+            cli_mueller = cli_crs = None
+            if _CLI_AVAILABLE:
+                try:
+                    with st.spinner("Solving (CLI reference)..."):
+                        cli_mueller, cli_crs = _run_cli(
+                            coords, radii, eps, k, N_theta, N_phi, N_ave, formulation,
+                            acc, tol, restart, max_iter,
+                        )
+                except Exception as exc:  # noqa: BLE001
+                    st.error(f"CLI run failed: {exc}")
+
+            st.session_state["dashboard_result"] = {
+                "result": result,
+                "cli_mueller": cli_mueller,
+                "cli_crs": cli_crs,
+                "N_theta": int(N_theta),
+                "N_phi": int(N_phi),
+                "N_ave": int(N_ave),
+            }
+
+        if "dashboard_result" in st.session_state:
+            state = st.session_state["dashboard_result"]
+            result = state["result"]
+            cli_mueller = state["cli_mueller"]
+            cli_crs = state["cli_crs"]
+
+            render_cross_section_metrics(result, cli_crs)
+
+            render_angular_plots(
+                result["mueller"], state["N_ave"], state["N_phi"], state["N_theta"],
+                cli_mueller=cli_mueller, key="single_phi_cut",
+            )
+
+            with st.expander("Raw Mueller matrix"):
+                st.dataframe(result["mueller"])
+        else:
+            st.info("Configure a cluster on the left and click **Solve**.")
 
 # ---------------------------------------------------------------------------
 # Tab 2: wavelength sweep from a TOML config
 # ---------------------------------------------------------------------------
 
 with tab_sweep:
-    from pyfastmm._config import SweepConfig, load_config, run_sweep
+    from pyfastmm._config import SweepConfig, load_config
 
-    st.subheader("Sweep configuration")
+    config_col, results_col = st.columns([1, 2])
 
-    discovered = sorted(_DATA_DIR.glob("*.toml")) if _DATA_DIR.is_dir() else []
-    source_labels = [str(p.relative_to(_PROJ_ROOT)) for p in discovered] + ["Upload custom TOML..."]
-    source_choice = st.selectbox("Config source", source_labels, index=0 if discovered else 0)
+    with config_col:
+        st.subheader("Sweep configuration")
 
-    cfg: SweepConfig | None = None
-    cfg_base_dir: Path = _DATA_DIR
-    cfg_error = None
+        discovered = sorted(_DATA_DIR.glob("*.toml")) if _DATA_DIR.is_dir() else []
+        source_labels = [str(p.relative_to(_PROJ_ROOT)) for p in discovered] + ["Upload custom TOML..."]
+        source_choice = st.selectbox("Config source", source_labels, index=0, key="sweep_source")
 
-    if source_choice == "Upload custom TOML...":
-        uploaded_toml = st.file_uploader("Sweep config (.toml)", type=["toml"])
-        uploaded_data_files = st.file_uploader(
-            "Cluster position file(s) referenced by the config",
-            type=["dat", "txt", "csv", "pos"],
-            accept_multiple_files=True,
-        )
-        if uploaded_toml is not None:
-            tmp_dir = Path(tempfile.mkdtemp())
-            toml_path = tmp_dir / uploaded_toml.name
-            toml_path.write_bytes(uploaded_toml.getvalue())
-            for uf in uploaded_data_files or []:
-                (tmp_dir / uf.name).write_bytes(uf.getvalue())
+        cfg: SweepConfig | None = None
+        cfg_base_dir: Path = _DATA_DIR
+        cfg_error = None
+
+        if source_choice == "Upload custom TOML...":
+            uploaded_toml = st.file_uploader("Sweep config (.toml)", type=["toml"], key="sweep_upload_toml")
+            uploaded_data_files = st.file_uploader(
+                "Cluster position file(s) referenced by the config",
+                type=["dat", "txt", "csv", "pos"],
+                accept_multiple_files=True,
+                key="sweep_upload_data",
+            )
+            if uploaded_toml is not None:
+                tmp_dir = Path(tempfile.mkdtemp())
+                toml_path = tmp_dir / uploaded_toml.name
+                toml_path.write_bytes(uploaded_toml.getvalue())
+                for uf in uploaded_data_files or []:
+                    (tmp_dir / uf.name).write_bytes(uf.getvalue())
+                try:
+                    cfg = load_config(toml_path)
+                    # If the referenced positions_file wasn't uploaded,
+                    # fall back to tests/data/ -- lets a custom config
+                    # (e.g. a different wavelength range) reuse an
+                    # existing cluster file without re-uploading it.
+                    if (tmp_dir / cfg.particles.positions_file).is_file():
+                        cfg_base_dir = tmp_dir
+                    else:
+                        cfg_base_dir = _DATA_DIR
+                except Exception as exc:  # noqa: BLE001
+                    cfg_error = str(exc)
+            else:
+                st.info(
+                    "Upload a .toml sweep config. If it references a "
+                    "cluster position file not already in tests/data/, "
+                    "upload that too via particles.positions_file."
+                )
+        else:
+            toml_path = _PROJ_ROOT / source_choice
             try:
                 cfg = load_config(toml_path)
-                # If the referenced positions_file wasn't uploaded, fall
-                # back to tests/data/ -- lets a custom config (e.g. a
-                # different wavelength range) reuse an existing cluster
-                # file without re-uploading it.
-                if (tmp_dir / cfg.particles.positions_file).is_file():
-                    cfg_base_dir = tmp_dir
-                else:
-                    cfg_base_dir = _DATA_DIR
+                cfg_base_dir = toml_path.parent
             except Exception as exc:  # noqa: BLE001
                 cfg_error = str(exc)
-        else:
-            st.info(
-                "Upload a .toml sweep config. If it references a cluster "
-                "position file not already in tests/data/, upload that "
-                "too via particles.positions_file."
-            )
-    else:
-        toml_path = _PROJ_ROOT / source_choice
-        try:
-            cfg = load_config(toml_path)
-            cfg_base_dir = toml_path.parent
-        except Exception as exc:  # noqa: BLE001
-            cfg_error = str(exc)
 
-    if cfg_error:
-        st.error(f"Failed to load config: {cfg_error}")
+        if cfg_error:
+            st.error(f"Failed to load config: {cfg_error}")
 
-    if cfg is not None:
-        try:
-            positions_preview = cfg.particles.load_positions(cfg_base_dir)
-            n_particles = positions_preview.shape[0]
-            load_error = None
-        except Exception as exc:  # noqa: BLE001
-            n_particles = None
-            load_error = str(exc)
-
-        wl = cfg.wavelengths.get_wavelengths_m()
-        info_cols = st.columns(4)
-        info_cols[0].metric("Particles", n_particles if n_particles is not None else "?")
-        info_cols[1].metric("Wavelengths", len(wl))
-        info_cols[2].metric("Range", f"{wl.min():.3g}-{wl.max():.3g}")
-        info_cols[3].metric("Formulation", {0: "STMM", 1: "FaSTMM", 2: "FaSTMM2"}[cfg.solver.formulation])
-
-        if load_error:
-            st.error(f"Failed to load cluster file: {load_error}")
-
-        with st.expander("Quick overrides (speed vs. accuracy)"):
-            ov_theta = st.slider("N_theta", 5, 361, cfg.solver.N_theta, step=2, key="sweep_ntheta")
-            ov_phi = st.slider("N_phi", 1, 32, cfg.solver.N_phi, key="sweep_nphi")
-            ov_acc = st.slider("MLFMM accuracy (digits)", 1, 6, cfg.solver.acc, key="sweep_acc")
-            cfg.solver.N_theta = int(ov_theta)
-            cfg.solver.N_phi = int(ov_phi)
-            cfg.solver.acc = int(ov_acc)
-
-        run_sweep_clicked = st.button(
-            "Run Sweep", type="primary", disabled=(n_particles is None)
-        )
-
-        if run_sweep_clicked:
-            progress = st.progress(0.0, text="Running sweep...")
-
-            def _on_progress(frac, wavelength_m):
-                progress.progress(frac, text=f"Solved wavelength {wavelength_m:.4g} ({frac:.0%})")
-
+        n_particles = None
+        if cfg is not None:
             try:
-                results = run_sweep(cfg, base_dir=cfg_base_dir, progress_callback=_on_progress)
+                n_particles = cfg.particles.load_positions(cfg_base_dir).shape[0]
+            except Exception as exc:  # noqa: BLE001
+                st.error(f"Failed to load cluster file: {exc}")
+
+            wl = cfg.wavelengths.get_wavelengths_m()
+            st.caption(
+                f"{n_particles if n_particles is not None else '?'} particles, "
+                f"{len(wl)} wavelengths in [{wl.min():.3g}, {wl.max():.3g}], "
+                f"formulation={ {0: 'STMM', 1: 'FaSTMM', 2: 'FaSTMM2'}[cfg.solver.formulation] }"
+            )
+
+            with st.expander("Quick overrides (speed vs. accuracy)"):
+                cfg.solver.N_theta = int(
+                    st.slider("N_theta", 5, 361, cfg.solver.N_theta, step=2, key="sweep_ntheta")
+                )
+                cfg.solver.N_phi = int(st.slider("N_phi", 1, 32, cfg.solver.N_phi, key="sweep_nphi"))
+                cfg.solver.acc = int(
+                    st.slider("MLFMM accuracy (digits)", 1, 6, cfg.solver.acc, key="sweep_acc")
+                )
+
+            if cfg.output.compute_tmatrix:
+                st.info("output.compute_tmatrix is set -- CLI cross-check isn't available for T-matrix sweeps.")
+
+            run_sweep_clicked = st.button(
+                "Run Sweep", type="primary", disabled=(n_particles is None), key="sweep_run"
+            )
+        else:
+            run_sweep_clicked = False
+
+    with results_col:
+        if cfg is not None and run_sweep_clicked:
+            positions = cfg.particles.load_positions(cfg_base_dir)
+            positions = cfg.incident.rotate_positions(positions)
+            coords, radii = positions[:, :3], positions[:, 3]
+            eps = np.full(len(radii), cfg.particles.eps())
+            wl_m = cfg.wavelengths.get_wavelengths_m()
+            k_vals = cfg.wavelengths.get_wavenumbers()
+            solver = cfg.solver
+            do_cli = _CLI_AVAILABLE and not cfg.output.compute_tmatrix
+
+            n_steps = len(wl_m) * (2 if do_cli else 1)
+            progress = st.progress(0.0, text="Running sweep...")
+            step = 0
+            f = FaSTMM2()
+            pyfastmm_results = []
+            cli_results = []
+            try:
+                for wl, kk in zip(wl_m, k_vals):
+                    if cfg.output.compute_tmatrix:
+                        r = f.compute_tmatrix(
+                            coords, radii, eps, float(kk), t_order=cfg.output.t_order,
+                            formulation=solver.formulation, acc=solver.acc,
+                            tol=solver.tolerance, restart=solver.restart,
+                            max_iter=solver.max_iterations,
+                        )
+                    else:
+                        r = f.solve(
+                            coords, radii, eps, float(kk),
+                            N_theta=solver.N_theta, N_phi=solver.N_phi,
+                            N_ave=solver.N_ave, halton_init=solver.halton_init,
+                            formulation=solver.formulation, acc=solver.acc,
+                            tol=solver.tolerance, restart=solver.restart,
+                            max_iter=solver.max_iterations,
+                        )
+                    r["wavelength_m"] = float(wl)
+                    r["k"] = float(kk)
+                    pyfastmm_results.append(r)
+                    step += 1
+                    progress.progress(step / n_steps, text=f"pyfastmm: wavelength {wl:.4g} ({step}/{n_steps})")
+
+                    if do_cli:
+                        try:
+                            cli_mueller, cli_crs = _run_cli(
+                                coords, radii, eps, float(kk), solver.N_theta, solver.N_phi,
+                                solver.N_ave, solver.formulation, solver.acc,
+                                solver.tolerance, solver.restart, solver.max_iterations,
+                            )
+                            cli_crs["mueller"] = cli_mueller
+                            cli_results.append(cli_crs)
+                        except Exception as exc:  # noqa: BLE001
+                            st.warning(f"CLI failed at wavelength {wl:.4g}: {exc}")
+                            cli_results.append(None)
+                        step += 1
+                        progress.progress(step / n_steps, text=f"CLI: wavelength {wl:.4g} ({step}/{n_steps})")
+
                 st.session_state["sweep_results"] = {
-                    "results": results,
-                    "N_theta": cfg.solver.N_theta,
-                    "N_phi": cfg.solver.N_phi,
-                    "N_ave": cfg.solver.N_ave,
+                    "results": pyfastmm_results,
+                    "cli_results": cli_results if do_cli else None,
+                    "N_theta": solver.N_theta,
+                    "N_phi": solver.N_phi,
+                    "N_ave": solver.N_ave,
+                    "is_tmatrix": cfg.output.compute_tmatrix,
                 }
             except Exception as exc:  # noqa: BLE001
                 st.error(f"Sweep failed: {exc}")
             progress.empty()
 
-    if "sweep_results" in st.session_state:
-        sweep_state = st.session_state["sweep_results"]
-        results = sweep_state["results"]
-        wl_m = np.array([r["wavelength_m"] for r in results])
+        if "sweep_results" in st.session_state:
+            sweep_state = st.session_state["sweep_results"]
+            results = sweep_state["results"]
+            cli_results = sweep_state["cli_results"]
+            wl_m = np.array([r["wavelength_m"] for r in results])
 
-        st.subheader("Cross-section spectrum")
-        fig_spec = go.Figure()
-        fig_spec.add_trace(go.Scatter(x=wl_m, y=[r["c_ext"] for r in results], name="Cext", mode="lines+markers"))
-        fig_spec.add_trace(go.Scatter(x=wl_m, y=[r["c_abs"] for r in results], name="Cabs", mode="lines+markers"))
-        fig_spec.add_trace(go.Scatter(x=wl_m, y=[r["c_sca"] for r in results], name="Csca", mode="lines+markers"))
-        fig_spec.update_layout(xaxis_title="Wavelength", yaxis_title="Cross section")
-        st.plotly_chart(fig_spec, width="stretch")
+            if sweep_state["is_tmatrix"]:
+                st.subheader("T-matrix sweep")
+                t_idx = st.select_slider(
+                    "Wavelength", options=list(range(len(results))),
+                    format_func=lambda i: f"{wl_m[i]:.4g}", key="sweep_t_wl",
+                )
+                Taa = results[t_idx]["Taa"]
+                st.write(f"Taa shape: {Taa.shape}")
+                with st.expander("Taa (real part)"):
+                    st.dataframe(np.real(Taa))
+            else:
+                st.subheader("Cross-section spectrum")
+                fig_spec = go.Figure()
+                for key, name in [("c_ext", "Cext"), ("c_abs", "Cabs"), ("c_sca", "Csca")]:
+                    fig_spec.add_trace(go.Scatter(
+                        x=wl_m, y=[r[key] for r in results],
+                        name=f"{name} (pyfastmm)", mode="lines+markers",
+                    ))
+                    if cli_results is not None:
+                        fig_spec.add_trace(go.Scatter(
+                            x=wl_m,
+                            y=[c[key] if c is not None else None for c in cli_results],
+                            name=f"{name} (CLI)", mode="markers",
+                            marker=dict(symbol="x", size=9),
+                        ))
+                fig_spec.update_layout(xaxis_title="Wavelength", yaxis_title="Cross section")
+                st.plotly_chart(fig_spec, width="stretch")
 
-        st.subheader("Angular Mueller matrix at a chosen wavelength")
-        wl_idx = st.select_slider(
-            "Wavelength", options=list(range(len(results))),
-            format_func=lambda i: f"{wl_m[i]:.4g}",
-        )
-        selected = results[wl_idx]
-        cols = st.columns(4)
-        cols[0].metric("Cext", f"{selected['c_ext']:.4f}")
-        cols[1].metric("Cabs", f"{selected['c_abs']:.4f}")
-        cols[2].metric("Csca", f"{selected['c_sca']:.4f}")
-        cols[3].metric("Asymmetry", f"{selected['asymmetry']:.4f}")
+                st.subheader("Angular Mueller matrix at a chosen wavelength")
+                wl_idx = st.select_slider(
+                    "Wavelength", options=list(range(len(results))),
+                    format_func=lambda i: f"{wl_m[i]:.4g}", key="sweep_wl",
+                )
+                selected = results[wl_idx]
+                selected_cli = cli_results[wl_idx] if cli_results is not None else None
 
-        render_angular_plots(
-            selected["mueller"], sweep_state["N_ave"], sweep_state["N_phi"],
-            sweep_state["N_theta"], key="sweep_phi_cut",
-        )
-    elif cfg is None and not discovered:
-        st.info("No sweep configs found in tests/data/. Upload one to get started.")
+                render_cross_section_metrics(selected, selected_cli)
+
+                render_angular_plots(
+                    selected["mueller"], sweep_state["N_ave"], sweep_state["N_phi"],
+                    sweep_state["N_theta"],
+                    cli_mueller=selected_cli["mueller"] if selected_cli is not None else None,
+                    key="sweep_phi_cut",
+                )
+        elif cfg is None:
+            st.info("Pick or upload a sweep config on the left to get started.")
