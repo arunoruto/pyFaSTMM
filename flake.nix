@@ -146,7 +146,7 @@
             };
           };
 
-          default = pyfastmm;
+          default = fastmm2;
         }
       );
 
