@@ -135,8 +135,13 @@ def _run_cli(coords, radii, eps, k, N_theta, N_phi, N_ave, formulation, acc, tol
 
 
 # ---------------------------------------------------------------------------
-# Solve + plot
+# Solve
 # ---------------------------------------------------------------------------
+#
+# The solve itself (and, if requested, the CLI cross-check) only runs when
+# the Solve button is clicked -- the result is cached in st.session_state
+# so that later widget interactions (e.g. picking which phi cut to plot,
+# see below) just rerun the script without recomputing anything.
 
 if run:
     coords = sphere_df[["x", "y", "z"]].to_numpy(dtype=np.float64)
@@ -154,17 +159,55 @@ if run:
             restart=int(restart), max_iter=int(max_iter),
         )
 
-    mueller = result["mueller"]
-    if N_ave == 0:
-        theta_deg = np.degrees(mueller[:, 1])
-        p11 = mueller[:, 2]
-        p12 = mueller[:, 3]
-    else:
-        theta_deg = np.degrees(mueller[:, 0])
-        p11 = mueller[:, 1]
-        p12 = mueller[:, 2]
+    cli_result = None
+    if compare_cli:
+        try:
+            with st.spinner("Running CLI reference..."):
+                cli_mueller, cli_crs = _run_cli(
+                    coords, radii, eps, k, N_theta, N_phi, N_ave, formulation,
+                    acc, tol, restart, max_iter,
+                )
+            cli_result = (cli_mueller, cli_crs)
+        except Exception as exc:  # noqa: BLE001
+            st.error(f"CLI run failed: {exc}")
 
-    dolp = np.where(p11 != 0, -p12 / p11, 0.0)
+    st.session_state["dashboard_result"] = {
+        "result": result,
+        "cli_result": cli_result,
+        "N_theta": int(N_theta),
+        "N_phi": int(N_phi),
+        "N_ave": int(N_ave),
+    }
+
+# ---------------------------------------------------------------------------
+# Plot
+# ---------------------------------------------------------------------------
+#
+# For fixed orientation (N_ave == 0), the Mueller matrix upstream returns
+# is N_phi separate theta-sweeps concatenated back to back (phi is the
+# *outer* loop, theta the inner one -- see mueller_matrix's own loop nest
+# in external/fastmm2/src/mie.f90). A cluster of spheres isn't generally
+# axisymmetric, so those N_phi cuts are genuinely different curves --
+# plotting the whole flattened array as a single connected line zig-zags
+# back across theta at every phi boundary, producing a tangled multi-strand
+# plot. Reshaping to (N_phi, N_theta, ...) and picking one phi slice (or
+# showing them as separate traces) is the fix.
+
+
+def _phi_slices(mueller, n_phi, n_theta):
+    """Reshape a fixed-orientation Mueller array into (phi, theta, cols)."""
+    return mueller.reshape(n_phi, n_theta, mueller.shape[1])
+
+
+if "dashboard_result" in st.session_state:
+    state = st.session_state["dashboard_result"]
+    result = state["result"]
+    cli_result = state["cli_result"]
+    N_theta_used = state["N_theta"]
+    N_phi_used = state["N_phi"]
+    N_ave_used = state["N_ave"]
+
+    mueller = result["mueller"]
 
     col1, col2, col3, col4, col5 = st.columns(5)
     col1.metric("Cext", f"{result['c_ext']:.4f}")
@@ -173,42 +216,79 @@ if run:
     col4.metric("Csca (optical thm.)", f"{result['c_ext_minus_c_abs']:.4f}")
     col5.metric("Asymmetry <cos theta>", f"{result['asymmetry']:.4f}")
 
-    cli_theta = cli_p11 = cli_dolp = None
-    if compare_cli:
-        try:
-            cli_mueller, cli_crs = _run_cli(
-                coords, radii, eps, k, N_theta, N_phi, N_ave, formulation,
-                acc, tol, restart, max_iter,
-            )
-            st.info(
-                f"CLI cross sections: Cext={cli_crs[0]:.4f}, Cabs={cli_crs[2]:.4f}, "
-                f"Csca={cli_crs[3]:.4f}, asymmetry={cli_crs[4]:.4f}"
-            )
-            cli_theta = np.degrees(cli_mueller[:, 1 if N_ave == 0 else 0])
-            cli_p11 = cli_mueller[:, 2 if N_ave == 0 else 1]
-            cli_p12 = cli_mueller[:, 3 if N_ave == 0 else 2]
-            cli_dolp = np.where(cli_p11 != 0, -cli_p12 / cli_p11, 0.0)
-        except Exception as exc:  # noqa: BLE001
-            st.error(f"CLI run failed: {exc}")
+    if cli_result is not None:
+        cli_mueller, cli_crs = cli_result
+        st.info(
+            f"CLI cross sections: Cext={cli_crs[0]:.4f}, Cabs={cli_crs[2]:.4f}, "
+            f"Csca={cli_crs[3]:.4f}, asymmetry={cli_crs[4]:.4f}"
+        )
+    else:
+        cli_mueller = None
 
     fig_p11 = go.Figure()
-    fig_p11.add_trace(go.Scatter(x=theta_deg, y=p11, mode="lines", name="pyfastmm"))
-    if cli_theta is not None:
-        fig_p11.add_trace(
-            go.Scatter(x=cli_theta, y=cli_p11, mode="markers", name="CLI")
-        )
+    fig_dolp = go.Figure()
+
+    if N_ave_used == 0:
+        mueller_3d = _phi_slices(mueller, N_phi_used, N_theta_used)
+        phi_deg = np.degrees(mueller_3d[:, 0, 0])
+        phi_labels = ["All phi (separate traces)"] + [
+            f"phi = {p:.1f} deg" for p in phi_deg
+        ]
+        phi_choice = st.selectbox("Phi cut to plot", phi_labels, index=1)
+
+        if cli_mueller is not None:
+            cli_3d = _phi_slices(cli_mueller, N_phi_used, N_theta_used)
+        else:
+            cli_3d = None
+
+        phi_indices = range(N_phi_used) if phi_choice == phi_labels[0] else [
+            phi_labels.index(phi_choice) - 1
+        ]
+        for i in phi_indices:
+            theta_deg = np.degrees(mueller_3d[i, :, 1])
+            p11 = mueller_3d[i, :, 2]
+            p12 = mueller_3d[i, :, 3]
+            dolp = np.where(p11 != 0, -p12 / p11, 0.0)
+            label = f"pyfastmm (phi={phi_deg[i]:.1f} deg)"
+            fig_p11.add_trace(go.Scatter(x=theta_deg, y=p11, mode="lines", name=label))
+            fig_dolp.add_trace(go.Scatter(x=theta_deg, y=dolp, mode="lines", name=label))
+            if cli_3d is not None:
+                cli_theta = np.degrees(cli_3d[i, :, 1])
+                cli_p11 = cli_3d[i, :, 2]
+                cli_p12 = cli_3d[i, :, 3]
+                cli_dolp = np.where(cli_p11 != 0, -cli_p12 / cli_p11, 0.0)
+                cli_label = f"CLI (phi={phi_deg[i]:.1f} deg)"
+                fig_p11.add_trace(
+                    go.Scatter(x=cli_theta, y=cli_p11, mode="markers", name=cli_label)
+                )
+                fig_dolp.add_trace(
+                    go.Scatter(x=cli_theta, y=cli_dolp, mode="markers", name=cli_label)
+                )
+    else:
+        theta_deg = np.degrees(mueller[:, 0])
+        p11 = mueller[:, 1]
+        p12 = mueller[:, 2]
+        dolp = np.where(p11 != 0, -p12 / p11, 0.0)
+        fig_p11.add_trace(go.Scatter(x=theta_deg, y=p11, mode="lines", name="pyfastmm"))
+        fig_dolp.add_trace(go.Scatter(x=theta_deg, y=dolp, mode="lines", name="pyfastmm"))
+        if cli_mueller is not None:
+            cli_theta = np.degrees(cli_mueller[:, 0])
+            cli_p11 = cli_mueller[:, 1]
+            cli_p12 = cli_mueller[:, 2]
+            cli_dolp = np.where(cli_p11 != 0, -cli_p12 / cli_p11, 0.0)
+            fig_p11.add_trace(
+                go.Scatter(x=cli_theta, y=cli_p11, mode="markers", name="CLI")
+            )
+            fig_dolp.add_trace(
+                go.Scatter(x=cli_theta, y=cli_dolp, mode="markers", name="CLI")
+            )
+
     fig_p11.update_layout(
         title="Phase function P11", xaxis_title="Scattering angle (deg)",
         yaxis_title="P11", yaxis_type="log",
     )
     st.plotly_chart(fig_p11, width='stretch')
 
-    fig_dolp = go.Figure()
-    fig_dolp.add_trace(go.Scatter(x=theta_deg, y=dolp, mode="lines", name="pyfastmm"))
-    if cli_theta is not None:
-        fig_dolp.add_trace(
-            go.Scatter(x=cli_theta, y=cli_dolp, mode="markers", name="CLI")
-        )
     fig_dolp.update_layout(
         title="Degree of linear polarization (-P12/P11)",
         xaxis_title="Scattering angle (deg)", yaxis_title="-P12/P11",
