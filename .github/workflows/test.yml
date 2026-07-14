@@ -30,10 +30,26 @@ jobs:
           enable-cache: true
       - name: Install dependencies (builds the f2py extension)
         run: uv sync --extra dev
+      - name: Cache | FaSTMM2 CLI reference binary
+        id: cache-cli
+        uses: actions/cache@v4
+        with:
+          path: build/cli/FaSTMM2
+          # external/fastmm2 is a git submodule pinned to a fixed commit
+          # in .gitmodules -- it essentially never changes between runs,
+          # so hashing its checked-out content (plus the Makefile that
+          # drives the CMake build) is a reliable "did the CLI's own
+          # inputs change" key, letting most runs skip rebuilding it
+          # entirely (mirrors pyMSTM's identical CLI-caching setup).
+          key: ${{ runner.os }}-fastmm2-cli-${{ hashFiles('external/fastmm2/src/**', 'Makefile') }}
       - name: Build the standalone FaSTMM2 CLI reference binary
         # test_compatibility.py skips itself if this isn't present -- but
         # we want that cross-check to actually run in CI, not silently
-        # skip.
+        # skip. Skipped entirely on a cache hit above -- `make`'s own
+        # mtime-based staleness check isn't reliable here since a fresh
+        # checkout + cache restore don't produce trustworthy relative
+        # timestamps between sources and the cached binary.
+        if: steps.cache-cli.outputs.cache-hit != 'true'
         run: make cli
       - name: Test with pytest
         run: uv run pytest tests/ -v

@@ -1,0 +1,171 @@
+name: Wheels
+
+# Single source of truth for *how* pyfastmm's wheels + sdist are built.
+# Mirrors pyMSTM's wheels.yml (github.com/arunoruto/pyMSTM) -- see that
+# project for the fuller rationale behind this design.
+#
+# Deliberately not triggered automatically at all (no PR push, no push to
+# main) -- cibuildwheel across cp311-cp314 is slow enough, and this
+# project small/quiet enough, that it isn't worth building on every
+# commit or every merge. Runs on demand instead:
+#   - workflow_dispatch: Actions tab, or `gh workflow run wheels.yml --ref
+#     <branch>` -- run manually whenever you actually want to validate a
+#     build (e.g. right before merging a PR you're unsure about).
+#   - Commenting `/build-wheels` on a PR.
+#   - Called by publish.yml (workflow_call) with the freshly-created tag
+#     at actual release time.
+#
+# Tradeoff worth knowing: publish.yml's `release` job tags before this
+# workflow ever builds anything (tag-first), so if a release's build
+# fails here, the tag/GitHub Release already exist -- a phantom release
+# with no wheels, needing manual cleanup (`gh release delete <tag>
+# --cleanup-tag`). There's no automatic pre-release validation to catch
+# this ahead of time; the mitigation is manual -- run workflow_dispatch
+# or `/build-wheels` on a PR you're unsure about before merging/releasing.
+#
+# All cibuildwheel configuration lives in pyproject.toml's
+# [tool.cibuildwheel] -- deliberately not here as CIBW_* env vars, so this
+# stays a bare `uses:` and the exact same build is reproducible locally
+# with the `cibuildwheel` CLI.
+
+on:
+  workflow_call:
+    inputs:
+      ref:
+        description: "Git ref (tag) to build. Empty builds the triggering commit."
+        type: string
+        required: false
+        default: ""
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Ref to build (defaults to whatever branch this is run against)."
+        type: string
+        required: false
+        default: ""
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: read
+
+jobs:
+  # Only relevant for the issue_comment trigger: gates /build-wheels on
+  # the commenter actually having write access (issue_comment fires for
+  # *any* comment from *anyone* on a public repo -- without this, anyone
+  # could burn CI minutes triggering the wheel matrix on an arbitrary PR),
+  # and resolves the PR's head SHA (issue_comment's payload doesn't
+  # include PR ref info directly, only the issue/PR number).
+  check_comment:
+    if: >
+      github.event_name == 'issue_comment' &&
+      github.event.issue.pull_request != null &&
+      contains(github.event.comment.body, '/build-wheels')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read # to resolve the PR's head SHA
+      issues: write # to react to the triggering comment (PR comments are "issues" API-wise)
+    outputs:
+      authorized: ${{ steps.check.outputs.authorized }}
+      sha: ${{ steps.pr.outputs.sha }}
+    steps:
+      - name: Check commenter has write access
+        id: check
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { data } = await github.rest.repos.getCollaboratorPermissionLevel({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              username: context.payload.comment.user.login,
+            });
+            const authorized = ["admin", "write"].includes(data.permission);
+            core.setOutput("authorized", authorized);
+            await github.rest.reactions.createForIssueComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              comment_id: context.payload.comment.id,
+              content: authorized ? "rocket" : "-1",
+            });
+            if (!authorized) {
+              core.setFailed(`@${context.payload.comment.user.login} does not have write access -- not triggering the wheel build.`);
+            }
+
+      - name: Resolve PR head SHA
+        id: pr
+        if: steps.check.outputs.authorized == 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { data } = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.issue.number,
+            });
+            core.setOutput("sha", data.head.sha);
+
+  build_wheels:
+    name: Wheels on ${{ matrix.os }}
+    needs: [check_comment]
+    # always(): check_comment is skipped entirely for every trigger except
+    # issue_comment, and a skipped need must not block this job -- but a
+    # *failed* (unauthorized) check_comment must.
+    if: >
+      always() &&
+      needs.check_comment.result != 'failure' &&
+      (github.event_name != 'issue_comment' || needs.check_comment.outputs.authorized == 'true')
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # A matrix of one for now -- kept a matrix so macOS/Windows are a
+        # one-line add later (their cibuildwheel settings are already
+        # staged in pyproject.toml's [tool.cibuildwheel.macos]).
+        os: [ubuntu-latest]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # check_comment's resolved SHA on a /build-wheels comment;
+          # inputs.ref on workflow_call/workflow_dispatch (empty checks
+          # out whatever ref the dispatch/call itself targeted).
+          ref: ${{ needs.check_comment.outputs.sha || inputs.ref }}
+          submodules: recursive
+
+      - uses: pypa/cibuildwheel@v4.1.0
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cibw-wheels-${{ matrix.os }}
+          path: ./wheelhouse/*.whl
+
+  build_sdist:
+    name: sdist
+    needs: [check_comment]
+    if: >
+      always() &&
+      needs.check_comment.result != 'failure' &&
+      (github.event_name != 'issue_comment' || needs.check_comment.outputs.authorized == 'true')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.check_comment.outputs.sha || inputs.ref }}
+          submodules: recursive
+
+      - name: Install gfortran
+        # meson-python's sdist build runs `meson setup`, which requires a
+        # Fortran compiler to be found -- even though producing the sdist
+        # (a source tarball) compiles nothing itself. LAPACK/BLAS aren't
+        # needed here: meson.build never declares them as meson
+        # dependencies, only tools/build_f2py_ext.py links them directly
+        # at actual compile time.
+        run: sudo apt-get update && sudo apt-get install -y gfortran
+
+      - name: Build sdist
+        run: pipx run build --sdist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cibw-sdist
+          path: ./dist/*.tar.gz

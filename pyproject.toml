@@ -3,7 +3,13 @@ name = "pyfastmm"
 version = "0.1.0"
 description = "Python bindings for FaSTMM2 (Fast Superposition T-Matrix Method, MLFMM-accelerated)"
 readme = "README.md"
-requires-python = ">=3.12"
+# Lowered from >=3.12 to match pymstm's floor -- no cp311-specific issue
+# has actually turned up for this codebase (unlike pymstm's real cp39/
+# cp310 crashes), and pymstm's own cp311 wheels built and passed their
+# smoke test cleanly once past that legacy-numpy boundary, so the same
+# floor should hold here too. Revisit if cibuildwheel's cp311 leg says
+# otherwise.
+requires-python = ">=3.11"
 license = "MIT"
 license-files = ["LICENSE"]
 authors = [{ name = "pyfastmm contributors" }]
@@ -18,9 +24,14 @@ classifiers = [
 dependencies = ["numpy>=1.25"]
 
 [project.optional-dependencies]
+# meson/ninja/meson-python are here (not just build-system.requires)
+# because [tool.uv] no-build-isolation-package below builds pyfastmm in
+# this project's own venv, so its build backend must already be present
+# in it. No separate `build` extra for python-semantic-release -- the
+# release runs entirely via the official PSR GitHub Action (see
+# .github/workflows/publish.yml), which bundles it.
 dev = ["pytest>=7", "pytest-cov", "meson>=1.1", "ninja", "meson-python>=0.15", "h5py>=3.0", "pydantic>=2.0"]
 dashboard = ["streamlit>=1.28", "pandas>=2.0", "plotly>=5.0", "pydantic>=2.0"]
-build = ["python-semantic-release ~= 10.0"]
 
 [project.urls]
 Repository = "https://github.com/arunoruto/pyFaSTMM"
@@ -34,19 +45,59 @@ venv = ".venv"
 version_variables = ["src/pyfastmm/__init__.py:__version__"]
 version_toml = ["pyproject.toml:project.version"]
 major_on_zero = false
-# Only the sdist here -- compiled wheels need a per-platform toolchain
-# (gfortran/LAPACK/BLAS, on Linux/macOS separately) that doesn't fit in
-# this single job. .github/workflows/publish.yml's build_wheels job
-# builds the actual wheels afterwards, against the tag this bump
-# creates, via cibuildwheel.
-build_command = """
-    uv lock --upgrade-package "$PACKAGE_NAME"
-    git add uv.lock
-    uv build --sdist
-"""
+# No build_command: semantic-release only bumps the version, commits,
+# tags, and creates the GitHub Release. All artifacts (sdist + wheels)
+# are built afterwards by .github/workflows/wheels.yml against the tag
+# this creates, then published to PyPI + attached to the release by
+# publish.yml's publish job. (Consequence: uv.lock's own pyfastmm version
+# field trails one release behind, which is cosmetic for a library.)
 
 [tool.semantic_release.branches.main]
 match = "main"
+
+# --- cibuildwheel: how the published wheels are built ---
+#
+# Kept here (not as CIBW_* env vars in the workflow) so the workflow step
+# is a single bare `uses: pypa/cibuildwheel`, and so the exact same config
+# can be exercised locally with the `cibuildwheel` CLI. Mirrors pymstm's
+# own [tool.cibuildwheel] -- see that project for the empirical history
+# behind each Linux setting (manylinux2014's old GCC segfaulting on real
+# release runs, i686 forcing a from-source numpy build, etc.); applied
+# here proactively rather than re-discovering the same failures.
+[tool.cibuildwheel]
+build = "cp311-* cp312-* cp313-* cp314-*"
+skip = "*-musllinux*"
+build-verbosity = 1
+# A real post-build check: import the built wheel and run an actual
+# two-sphere solve, exercising the compiled _fastmm_ext extension end to
+# end. In a file, not an inline `python -c`, to avoid the YAML-folding
+# whitespace bugs that bit pymstm's original inline version repeatedly.
+test-command = "python {project}/tools/wheel_smoke_test.py"
+
+[tool.cibuildwheel.linux]
+# manylinux_2_28 (AlmaLinux 8) over cibuildwheel's manylinux2014 default
+# (CentOS 7 / GCC 10) -- pymstm confirmed the older GCC/glibc combination
+# segfaults on a real Fortran extension built this same way; applying the
+# same precedent here rather than waiting to rediscover it.
+manylinux-x86_64-image = "manylinux_2_28"
+# x86_64 only: cibuildwheel's default Linux arch set also includes i686
+# (32-bit), where numpy has no prebuilt wheel, forcing a multi-minute
+# from-source numpy compile for an architecture nobody needs here.
+archs = ["x86_64"]
+# manylinux_2_28 is AlmaLinux 8 -- gcc-gfortran/lapack-devel/blas-devel
+# are all in its base repos.
+before-all = "yum install -y gcc-gfortran lapack-devel blas-devel"
+
+# macOS is not in the release matrix yet (see .github/workflows/wheels.yml),
+# but keep its known-good setting ready so re-adding it is a one-line
+# matrix change: gfortran-13 is what GitHub's macOS runners ship
+# pre-installed (a freshly `brew install`ed gcc links libgfortran/
+# libquadmath requiring a newer macOS than cibuildwheel targets by
+# default, which delocate-wheel then refuses to repair -- pymstm hit this
+# for real). lapack/openblas aren't preinstalled, unlike gfortran.
+[tool.cibuildwheel.macos]
+before-all = "brew install lapack openblas"
+environment = { FC = "gfortran-13" }
 
 [tool.uv]
 # meson-python's editable-install loader hardcodes the absolute path to
