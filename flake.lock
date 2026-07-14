@@ -1,0 +1,43 @@
+{
+  "nodes": {
+    "fastmm2-src": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1781010177,
+        "narHash": "sha256-pBWNXhEJhrfmoZJctI38Zafg88uIPEkc1ePbRIoxQcI=",
+        "ref": "refs/heads/main",
+        "rev": "4b56dc5b30333f3358e205ba8f88a03ee4d2bb3b",
+        "revCount": 4,
+        "type": "git",
+        "url": "https://bitbucket.org/planetarysystemresearch/fastmm2"
+      },
+      "original": {
+        "rev": "4b56dc5b30333f3358e205ba8f88a03ee4d2bb3b",
+        "type": "git",
+        "url": "https://bitbucket.org/planetarysystemresearch/fastmm2"
+      }
+    },
+    "nixpkgs": {
+      "locked": {
+        "lastModified": 1784011430,
+        "narHash": "sha256-lDebytrYdd47IBLwvNOD+6AGeoqZ78CIKlp70hzW280=",
+        "rev": "8eeec934ae0dbeca3d7868c059568a65c08b2fc3",
+        "revCount": 1009228,
+        "type": "tarball",
+        "url": "https://api.flakehub.com/f/pinned/NixOS/nixpkgs/0.2605.1009228%2Brev-8eeec934ae0dbeca3d7868c059568a65c08b2fc3/019f61c3-3a8b-7a20-ab58-73d6d128ab25/source.tar.gz"
+      },
+      "original": {
+        "type": "tarball",
+        "url": "https://flakehub.com/f/NixOS/nixpkgs/0"
+      }
+    },
+    "root": {
+      "inputs": {
+        "fastmm2-src": "fastmm2-src",
+        "nixpkgs": "nixpkgs"
+      }
+    }
+  },
+  "root": "root",
+  "version": 7
+}
