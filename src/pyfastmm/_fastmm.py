@@ -92,6 +92,23 @@ class FaSTMM2:
     def __init__(self):
         self._ext = _ext
 
+    def set_truncation_formula(self, formula: int = 0) -> None:
+        """Choose the per-sphere Mie truncation formula.
+
+        0 (default): ``truncation_order``  -- ``floor(ka + 3*ka^(1/3))``, min 6.
+        1: ``truncation_order2`` -- more conservative formula that gives
+           larger expansion orders, especially for small ``ka`` where
+           FaSTMM2's default can under-resolve near-field coupling of
+           touching spheres.
+
+        Must be called *before* ``solve()`` or ``compute_tmatrix()`` --
+        this sets a module-level Fortran variable, so it affects all
+        subsequent calls (not just this instance, not thread-safe).
+
+        New in v1.1.
+        """
+        self._ext.fastmm2_f2py_bindings.truncation_formula = formula
+
     def solve(
         self,
         coords,
@@ -107,6 +124,7 @@ class FaSTMM2:
         tol=1e-4,
         restart=5,
         max_iter=50,
+        truncation_formula: int | None = None,
     ):
         """Solve for the Mueller matrix (and, for fixed orientation, Jones
         matrix) and cross sections of a cluster of spherical monomers.
@@ -138,6 +156,10 @@ class FaSTMM2:
             Desired MLFMM accuracy, in number of significant digits.
         tol, restart, max_iter : float, int, int
             GMRES solver parameters.
+        truncation_formula : int, optional
+            Per-sphere Mie truncation formula (0=default, 1=conservative).
+            Convenience wrapper around ``set_truncation_formula()``.  When
+            None (default), does not change the current setting.
 
         Returns
         -------
@@ -158,19 +180,43 @@ class FaSTMM2:
             asymmetry : float
                 Asymmetry parameter <cos(theta)>.
         """
+        if truncation_formula is not None:
+            self.set_truncation_formula(truncation_formula)
+
         _, coords_f, radii_f, eps_r, eps_i = _prepare_geometry(coords, radii, eps)
 
         if N_ave == 0:
             mueller, jones, crs = self._ext.fastmm2_f2py_bindings.fastmm2_solve_fixed(
-                coords_f, radii_f, eps_r, eps_i, float(k),
-                N_theta, N_phi, formulation, acc, tol, restart, max_iter,
+                coords_f,
+                radii_f,
+                eps_r,
+                eps_i,
+                float(k),
+                N_theta,
+                N_phi,
+                formulation,
+                acc,
+                tol,
+                restart,
+                max_iter,
             )
             result = {"mueller": mueller, "jones": jones}
         else:
             mueller, crs = self._ext.fastmm2_f2py_bindings.fastmm2_solve_averaged(
-                coords_f, radii_f, eps_r, eps_i, float(k),
-                N_theta, N_phi, N_ave, halton_init, formulation, acc,
-                tol, restart, max_iter,
+                coords_f,
+                radii_f,
+                eps_r,
+                eps_i,
+                float(k),
+                N_theta,
+                N_phi,
+                N_ave,
+                halton_init,
+                formulation,
+                acc,
+                tol,
+                restart,
+                max_iter,
             )
             result = {"mueller": mueller}
 
@@ -209,7 +255,17 @@ class FaSTMM2:
         nm = get_tmatrix_size(t_order)
 
         Taa, Tab, Tba, Tbb = self._ext.fastmm2_f2py_bindings.fastmm2_compute_tmatrix(
-            coords_f, radii_f, eps_r, eps_i, float(k),
-            t_order, nm, formulation, acc, tol, restart, max_iter,
+            coords_f,
+            radii_f,
+            eps_r,
+            eps_i,
+            float(k),
+            t_order,
+            nm,
+            formulation,
+            acc,
+            tol,
+            restart,
+            max_iter,
         )
         return {"Taa": Taa, "Tab": Tab, "Tba": Tba, "Tbb": Tbb}

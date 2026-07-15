@@ -20,6 +20,16 @@ use orientation_averaging
 use T_matrix
 implicit none
 
+!
+!  Module-level variable so the Python side can choose the truncation
+!  formula before calling solve()/compute_tmatrix(). 0 = default
+!  (truncation_order, floor(ka+3*ka^(1/3))), 1 = conservative
+!  (truncation_order2, larger order for a given ka -- typically closer
+!  to Wiscombe, especially for small ka where near-field coupling of
+!  touching spheres needs more terms).
+!
+integer, save :: truncation_formula = 0
+
 contains
 
 !
@@ -71,7 +81,11 @@ subroutine build_spheres(n, coords, radii, eps_r, eps_i, k, sphere, max_sph)
        sphere(sph)%eps_r = dcmplx(eps_r(sph), eps_i(sph))
 
        ka = real(k) * radii(sph)
-       sphere(sph)%Nmax = truncation_order(ka)
+       if (truncation_formula == 1) then
+          sphere(sph)%Nmax = truncation_order2(ka)
+       else
+          sphere(sph)%Nmax = truncation_order(ka)
+       end if
 
        sphere(sph)%Tmat_ind = 0
        sphere(sph)%ifT = 0
@@ -107,7 +121,11 @@ subroutine build_octree(sphere, k, formulation, acc, otree, nmax_cluster)
     end if
 
     ka = dble(k)*sqrt(3.0d0)/2.0d0 * otree(1)%tree(1)%dl
-    nmax_cluster = truncation_order(ka)
+    if (truncation_formula == 1) then
+       nmax_cluster = truncation_order2(ka)
+    else
+       nmax_cluster = truncation_order(ka)
+    end if
 end subroutine build_octree
 
 !
