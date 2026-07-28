@@ -38,6 +38,9 @@
     pkgs.blas
     pkgs.hdf5-fortran
     pkgs.cmake
+    # meson.build resolves LAPACK/BLAS link flags via `pkg-config --libs`
+    # (see meson.build's comment) instead of relying on NIX_LDFLAGS.
+    pkgs.pkg-config
   ];
 
   enterShell = ''

@@ -13,12 +13,14 @@ requires.
 FaSTMM2 needs OpenMP (real parallel regions in several modules) and LAPACK
 (plain external DGETRF/DGETRI/ZGETRF/ZGETRI/ZGESVD/DSTEV calls, no Fortran
 module interface -- link-time only) -- both passed through to f2py below.
-In a properly entered devenv/nix shell, `-llapack`/`-lblas` resolve via the
-wrapped compiler's NIX_LDFLAGS (from devenv.nix's `packages`); outside one,
-LAPACK/BLAS need to be resolvable through the normal linker search path
-(e.g. LIBRARY_PATH).
+The LAPACK/BLAS link flags are resolved by the caller via pkg-config (see
+meson.build) and passed in as `link_flags` -- explicit `-L<store path>
+-llapack` rather than the old bare `-llapack -lblas`, which only linked
+outside a Nix shell if NIX_LDFLAGS happened to be set (NixOS has no FHS
+/usr/lib for the plain linker search path to fall back on). Falls back to
+the bare flags if invoked directly with an empty link_flags argument.
 
-Usage: build_f2py_ext.py <output_path> <comma_separated_only_names> <source...>
+Usage: build_f2py_ext.py <output_path> <comma_separated_only_names> <link_flags> <source...>
 """
 
 import glob
@@ -32,12 +34,16 @@ import tempfile
 def main():
     output_path = os.path.abspath(sys.argv[1])
     only_names = sys.argv[2].split(",")
+    link_flags = sys.argv[3].split() if sys.argv[3].strip() else ["-llapack", "-lblas"]
     # f2py's meson backend always runs relative to the scratch cwd below;
     # resolve source paths to absolute first so they still resolve there.
-    sources = [os.path.abspath(s) for s in sys.argv[3:]]
+    sources = [os.path.abspath(s) for s in sys.argv[4:]]
 
     env = dict(os.environ)
     ldflags = "-Wl,-z,noexecstack -fopenmp"
+    nix_ldflags = env.get("NIX_LDFLAGS", "")
+    if nix_ldflags:
+        ldflags = f"{nix_ldflags} {ldflags}"
     env["LDFLAGS"] = f"{env['LDFLAGS']} {ldflags}" if env.get("LDFLAGS") else ldflags
 
     with tempfile.TemporaryDirectory() as scratch:
@@ -54,8 +60,7 @@ def main():
             "_fastmm_ext",
             "--f90flags=-fopenmp",
             "-lgomp",
-            "-llapack",
-            "-lblas",
+            *link_flags,
         ]
         subprocess.run(cmd, cwd=scratch, env=env, check=True)
         matches = glob.glob(os.path.join(scratch, "_fastmm_ext*.so")) + glob.glob(

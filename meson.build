@@ -17,6 +17,22 @@ fastmm2_dir = meson.project_source_root() / 'external' / 'fastmm2' / 'src'
 wrapper_dir = meson.project_source_root() / 'src' / 'pyfastmm' / '_fortran'
 patches_dir = wrapper_dir / 'patches'
 
+# --- LAPACK/BLAS link flags ---
+#
+# Resolved via pkg-config instead of bare `-llapack -lblas` (which only
+# link outside a Nix shell if NIX_LDFLAGS happens to be set, since NixOS
+# has no FHS /usr/lib for the plain linker search path to fall back on).
+# numpy.f2py's own "-c" compile mode runs its own internal meson project
+# (see tools/build_f2py_ext.py) rather than this one, so a meson
+# `dependency()` object can't be threaded through directly -- pkg-config's
+# `--libs` output (explicit `-L<store path> -llapack`) is passed as a
+# plain string argument instead.
+pkgconfig_prog = find_program('pkg-config')
+lapack_blas_libs = run_command(
+  pkgconfig_prog, '--libs', 'lapack', 'blas',
+  check: true,
+).stdout().strip()
+
 # --- Patched copy of one legacy source file ---
 #
 # numpy.f2py's Fortran parser (crackfortran) reads source files as ASCII
@@ -86,7 +102,7 @@ fastmm_ext = custom_target(
   output: '_fastmm_ext' + ext_suffix,
   command: [
     py, files('tools' / 'build_f2py_ext.py'),
-    '@OUTPUT@', ','.join(f2py_only), '@INPUT@',
+    '@OUTPUT@', ','.join(f2py_only), lapack_blas_libs, '@INPUT@',
   ],
   install: true,
   install_dir: py.get_install_dir(pure: false) / 'pyfastmm',
