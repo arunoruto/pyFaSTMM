@@ -158,7 +158,8 @@ subroutine fastmm2_solve_fixed(n, coords, radii, eps_r, eps_i, k_in, &
     implicit none
     integer, intent(in) :: n, N_theta, N_phi, formulation, acc, restart, max_iter
     real(dp), intent(in) :: coords(3,n), radii(n), eps_r(n), eps_i(n)
-    real(dp), intent(in) :: k_in, tol
+    complex(dp), intent(in) :: k_in
+    real(dp), intent(in) :: tol
     real(dp), intent(out) :: mueller(N_phi*N_theta, 18)
     complex(dp), intent(out) :: jones(N_phi*N_theta, 6)
     real(dp), intent(out) :: cross_sections(5)
@@ -166,29 +167,27 @@ subroutine fastmm2_solve_fixed(n, coords, radii, eps_r, eps_i, k_in, &
     type(data_struct), allocatable :: sphere(:)
     type(level_struct), allocatable :: otree(:)
     type(Tmatrix), allocatable :: Tmat(:)
-    complex(dp) :: k
     complex(dp), allocatable :: b_vec(:), b_vec2(:), xx(:), xx2(:)
     real(dp), allocatable :: S_out(:,:)
     complex(dp), allocatable :: J_out(:,:)
     integer :: nmax_cluster, max_sph
 
-    k = dcmplx(k_in, 0.0d0)
     allocate(Tmat(0))
 
-    call build_spheres(n, coords, radii, eps_r, eps_i, k, sphere, max_sph)
-    call build_octree(sphere, k, formulation, acc, otree, nmax_cluster)
+    call build_spheres(n, coords, radii, eps_r, eps_i, k_in, sphere, max_sph)
+    call build_octree(sphere, k_in, formulation, acc, otree, nmax_cluster)
 
-    call rhs2_xy(nmax_cluster, sphere, Tmat, b_vec, b_vec2, k)
+    call rhs2_xy(nmax_cluster, sphere, Tmat, b_vec, b_vec2, k_in)
 
     allocate(xx(size(b_vec)))
     allocate(xx2(size(b_vec)))
 
-    call gmres_mlfmm2(sphere, otree, Tmat, k, b_vec, b_vec2, xx, xx2, tol, restart, max_iter)
+    call gmres_mlfmm2(sphere, otree, Tmat, k_in, b_vec, b_vec2, xx, xx2, tol, restart, max_iter)
 
     deallocate(b_vec, b_vec2)
-    call inc_xy(nmax_cluster, sphere, b_vec, b_vec2, k)
+    call inc_xy(nmax_cluster, sphere, b_vec, b_vec2, k_in)
 
-    call mueller_matrix(sphere, xx, xx2, b_vec, b_vec2, k, N_theta, N_phi, &
+    call mueller_matrix(sphere, xx, xx2, b_vec, b_vec2, k_in, N_theta, N_phi, &
         nmax_cluster, S_out, J_out, cross_sections, 0.0_dp, 0.0_dp)
 
     mueller = S_out
@@ -212,22 +211,21 @@ subroutine fastmm2_solve_averaged(n, coords, radii, eps_r, eps_i, k_in, &
     integer, intent(in) :: n, N_theta, N_phi, N_ave, halton_init
     integer, intent(in) :: formulation, acc, restart, max_iter
     real(dp), intent(in) :: coords(3,n), radii(n), eps_r(n), eps_i(n)
-    real(dp), intent(in) :: k_in, tol
+    complex(dp), intent(in) :: k_in
+    real(dp), intent(in) :: tol
     real(dp), intent(out) :: mueller(N_theta, 17)
     real(dp), intent(out) :: cross_sections(5)
 
     type(data_struct), allocatable :: sphere(:)
     type(Tmatrix), allocatable :: Tmat(:)
-    complex(dp) :: k
     real(dp), allocatable :: S_ave(:,:)
     integer :: max_sph
 
-    k = dcmplx(k_in, 0.0d0)
     allocate(Tmat(0))
 
-    call build_spheres(n, coords, radii, eps_r, eps_i, k, sphere, max_sph)
+    call build_spheres(n, coords, radii, eps_r, eps_i, k_in, sphere, max_sph)
 
-    call orientation_ave(sphere, Tmat, 0, k, N_phi, N_theta, N_ave, halton_init, &
+    call orientation_ave(sphere, Tmat, 0, k_in, N_phi, N_theta, N_ave, halton_init, &
         S_ave, cross_sections, formulation, tol, restart, max_iter, acc)
 
     mueller = S_ave
@@ -262,7 +260,8 @@ subroutine fastmm2_compute_tmatrix(n, coords, radii, eps_r, eps_i, k_in, &
     implicit none
     integer, intent(in) :: n, T_order, nm, formulation, acc, restart, max_iter
     real(dp), intent(in) :: coords(3,n), radii(n), eps_r(n), eps_i(n)
-    real(dp), intent(in) :: k_in, tol
+    complex(dp), intent(in) :: k_in
+    real(dp), intent(in) :: tol
     complex(dp), intent(out) :: Taa(nm, nm)
     complex(dp), intent(out) :: Tab(nm, nm)
     complex(dp), intent(out) :: Tba(nm, nm)
@@ -271,16 +270,14 @@ subroutine fastmm2_compute_tmatrix(n, coords, radii, eps_r, eps_i, k_in, &
     type(data_struct), allocatable :: sphere(:)
     type(level_struct), allocatable :: otree(:)
     type(Tmatrix), allocatable :: Tmat(:)
-    complex(dp) :: k
     integer :: nmax_cluster, max_sph
 
-    k = dcmplx(k_in, 0.0d0)
     allocate(Tmat(0))
 
-    call build_spheres(n, coords, radii, eps_r, eps_i, k, sphere, max_sph)
-    call build_octree(sphere, k, formulation, acc, otree, nmax_cluster)
+    call build_spheres(n, coords, radii, eps_r, eps_i, k_in, sphere, max_sph)
+    call build_octree(sphere, k_in, formulation, acc, otree, nmax_cluster)
 
-    call compute_T_matrix(sphere, otree, Tmat, k, T_order, tol, restart, max_iter, &
+    call compute_T_matrix(sphere, otree, Tmat, k_in, T_order, tol, restart, max_iter, &
         Taa, Tab, Tba, Tbb)
 end subroutine fastmm2_compute_tmatrix
 

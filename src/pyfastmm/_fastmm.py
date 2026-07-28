@@ -138,9 +138,11 @@ class FaSTMM2:
         eps : array-like of complex, shape (n,)
             Electric permittivity of each sphere (eps = m**2, m = complex
             refractive index -- see module docstring).
-        k : float
-            Wavenumber (real; the surrounding medium is assumed
-            non-absorbing, matching upstream's own CLI).
+        k : float or complex
+            Wavenumber (real or complex; a complex value models a
+            (possibly absorbing) background medium, n_medium = k * lambda /
+            (2*pi)).  Equivalent to upstream's k with a non-trivial
+            background refractive index.
         N_theta, N_phi : int
             Angular resolution of the returned Mueller/Jones matrices.
         N_ave : int
@@ -191,7 +193,7 @@ class FaSTMM2:
                 radii_f,
                 eps_r,
                 eps_i,
-                float(k),
+                complex(k),
                 N_theta,
                 N_phi,
                 formulation,
@@ -207,7 +209,7 @@ class FaSTMM2:
                 radii_f,
                 eps_r,
                 eps_i,
-                float(k),
+                complex(k),
                 N_theta,
                 N_phi,
                 N_ave,
@@ -259,7 +261,7 @@ class FaSTMM2:
             radii_f,
             eps_r,
             eps_i,
-            float(k),
+            complex(k),
             t_order,
             nm,
             formulation,

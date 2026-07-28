@@ -15,10 +15,12 @@ FaSTMM2-specific fields just fall back to their own defaults if absent.
 
 Two physical differences from MSTM worth knowing:
 
-- FaSTMM2 has no background-medium refractive index -- the surrounding
-  medium is always assumed to be vacuum (n=1). A non-trivial
-  ``[medium]`` in the config is accepted (for config-file compatibility)
-  but ignored, with a warning.
+- FaSTMM2 supports a (possibly absorbing) background medium since
+  v1.1 -- the ``[medium].refractive_index`` is used to compute the
+  effective wavenumber ``k = 2*pi * n_medium / wavelength_vac`` and
+  particle permittivity contrast ``eps_eff = (n_particle / n_medium)**2``.
+  A complex ``refractive_index`` (n, k) on the medium leads to complex
+  wavenumber ``k`` and, therefore, an absorbing (lossy) host.
 - FaSTMM2 always illuminates along +z; there is no direct incident-beam-
   angle control like MSTM's ``incident_alpha_deg``/``incident_beta_deg``.
   ``[incident]`` is honored by rotating the cluster geometry the
@@ -33,6 +35,9 @@ Example
     positions_file = "cluster.dat"
     scale = 1e-9
     refractive_index = [1.5, 0.01]
+
+    [medium]
+    refractive_index_file = "nk_olivine.csv"
 
     [wavelengths]
     start = 0.4
@@ -49,7 +54,6 @@ from __future__ import annotations
 
 import os
 import tomllib
-import warnings
 from pathlib import Path
 from typing import Any
 
@@ -70,6 +74,7 @@ class ParticlesConfig(BaseModel):
     scale: float = 1.0
     gap_factor: float = 1.0
     refractive_index: tuple[float, float] = (1.5, 0.0)
+    refractive_index_file: str | None = None
 
     def load_positions(self, base_dir: str | os.PathLike[str] = "") -> np.ndarray:
         """Return (N, 4) array ``[x, y, z, radius]`` in physical units.
@@ -80,7 +85,7 @@ class ParticlesConfig(BaseModel):
         *gap_factor* stretches positions (not radii) to separate touching
         spheres.
         """
-        path = self._resolve(base_dir)
+        path = self._resolve(base_dir, self.positions_file)
         suffix = Path(path).suffix.lower()
         if suffix == ".csv":
             data = np.loadtxt(str(path), delimiter=",")
@@ -93,13 +98,39 @@ class ParticlesConfig(BaseModel):
             data[:, :3] *= self.gap_factor
         return data
 
+    def get_nk(
+        self,
+        wavelengths_raw: np.ndarray,
+        base_dir: str | os.PathLike[str] = "",
+    ) -> np.ndarray:
+        """Complex refractive index ``n + i*k`` at each wavelength.
+
+        If *refractive_index_file* is set, loads the file
+        (whitespace-delimited columns ``wavelength  n  k``, same units as
+        the ``[wavelengths]`` config before *scale*) and linearly
+        interpolates onto the requested wavelengths.  Otherwise broadcasts
+        *refractive_index* as a fixed (wavelength-independent) value.
+        """
+        if self.refractive_index_file:
+            path = self._resolve(base_dir, self.refractive_index_file)
+            data = np.loadtxt(str(path))
+            wl_data = data[:, 0]
+            n_data = data[:, 1]
+            k_data = data[:, 2]
+            n_interp = np.interp(wavelengths_raw, wl_data, n_data)
+            k_interp = np.interp(wavelengths_raw, wl_data, k_data)
+            return n_interp + 1j * k_interp
+        n_re, n_im = self.refractive_index
+        return np.full_like(wavelengths_raw, complex(n_re, n_im), dtype=complex)
+
     def eps(self) -> complex:
         """Electric permittivity (eps = m**2) from the refractive index."""
         n_re, n_im = self.refractive_index
         return complex(n_re, n_im) ** 2
 
-    def _resolve(self, base_dir: str | os.PathLike[str]) -> Path:
-        p = Path(self.positions_file)
+    @staticmethod
+    def _resolve(base_dir: str | os.PathLike[str], filepath: str) -> Path:
+        p = Path(filepath)
         if p.is_absolute():
             return p
         return Path(base_dir) / p
@@ -143,10 +174,34 @@ class WavelengthsConfig(BaseModel):
 
 
 class MediumConfig(BaseModel):
-    """Surrounding medium. FaSTMM2 assumes vacuum (n=1) -- see module
-    docstring; a non-trivial value here is accepted but ignored."""
+    """Surrounding medium. FaSTMM2 uses the medium refractive index to
+    compute the effective wavenumber ``k = 2*pi * n_medium / wavelength_vac``
+    and particle permittivity contrast ``eps_eff = (n_particle / n_medium)**2``,
+    fully supporting (possibly absorbing) background media since v1.1."""
 
     refractive_index: tuple[float, float] = (1.0, 0.0)
+    refractive_index_file: str | None = None
+
+    def get_nk(
+        self,
+        wavelengths_raw: np.ndarray,
+        base_dir: str | os.PathLike[str] = "",
+    ) -> np.ndarray:
+        """Complex refractive index ``n + i*k`` at each wavelength.
+
+        If *refractive_index_file* is set, loads and interpolates (see
+        :meth:`ParticlesConfig.get_nk`).  Otherwise uses the fixed tuple.
+        """
+        if self.refractive_index_file:
+            path = Path(self.refractive_index_file)
+            if not path.is_absolute():
+                path = Path(base_dir) / path
+            data = np.loadtxt(str(path))
+            n_interp = np.interp(wavelengths_raw, data[:, 0], data[:, 1])
+            k_interp = np.interp(wavelengths_raw, data[:, 0], data[:, 2])
+            return n_interp + 1j * k_interp
+        n_re, n_im = self.refractive_index
+        return np.full_like(wavelengths_raw, complex(n_re, n_im), dtype=complex)
 
 
 class IncidentConfig(BaseModel):
@@ -246,48 +301,58 @@ def run_sweep(
     compute_tmatrix(), if output.compute_tmatrix is set) returns, plus
     "wavelength_m" and "k" keys.
     """
-    med_re, med_im = config.medium.refractive_index
-    if (med_re, med_im) != (1.0, 0.0):
-        warnings.warn(
-            "FaSTMM2 has no background-medium model (always vacuum, n=1); "
-            f"the configured medium.refractive_index={config.medium.refractive_index} "
-            "is ignored.",
-            stacklevel=2,
-        )
-
     positions = config.particles.load_positions(base_dir)
     positions = config.incident.rotate_positions(positions)
     coords = positions[:, :3]
     radii = positions[:, 3]
-    n = len(radii)
-    eps = np.full(n, config.particles.eps())
+    n_spheres = len(radii)
 
     wavelengths_m = config.wavelengths.get_wavelengths_m()
-    wavenumbers = config.wavelengths.get_wavenumbers()
+    wavelengths_raw = wavelengths_m / config.wavelengths.scale
+
+    nk_particle = config.particles.get_nk(wavelengths_raw, base_dir)
+    nk_medium = config.medium.get_nk(wavelengths_raw, base_dir)
 
     f = FaSTMM2()
     solver = config.solver
     results = []
-    for i, (wl, k) in enumerate(zip(wavelengths_m, wavenumbers)):
+    for i, wl in enumerate(wavelengths_m):
+        n_part = nk_particle[i]
+        n_med = nk_medium[i]
+        eps_eff = (n_part / n_med) ** 2
+        eps = np.full(n_spheres, eps_eff)
+        k = 2.0 * np.pi * n_med / wl
         if config.output.compute_tmatrix:
             result = f.compute_tmatrix(
-                coords, radii, eps, float(k),
+                coords,
+                radii,
+                eps,
+                complex(k),
                 t_order=config.output.t_order,
-                formulation=solver.formulation, acc=solver.acc,
-                tol=solver.tolerance, restart=solver.restart,
+                formulation=solver.formulation,
+                acc=solver.acc,
+                tol=solver.tolerance,
+                restart=solver.restart,
                 max_iter=solver.max_iterations,
             )
         else:
             result = f.solve(
-                coords, radii, eps, float(k),
-                N_theta=solver.N_theta, N_phi=solver.N_phi,
-                N_ave=solver.N_ave, halton_init=solver.halton_init,
-                formulation=solver.formulation, acc=solver.acc,
-                tol=solver.tolerance, restart=solver.restart,
+                coords,
+                radii,
+                eps,
+                complex(k),
+                N_theta=solver.N_theta,
+                N_phi=solver.N_phi,
+                N_ave=solver.N_ave,
+                halton_init=solver.halton_init,
+                formulation=solver.formulation,
+                acc=solver.acc,
+                tol=solver.tolerance,
+                restart=solver.restart,
                 max_iter=solver.max_iterations,
             )
         result["wavelength_m"] = float(wl)
-        result["k"] = float(k)
+        result["k"] = complex(k)
         results.append(result)
         if progress_callback is not None:
             progress_callback((i + 1) / len(wavelengths_m), float(wl))

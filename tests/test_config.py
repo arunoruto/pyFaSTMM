@@ -57,7 +57,9 @@ def test_wavelengths_requires_values_or_range():
         WavelengthsConfig()
 
 
-def test_medium_ignored_warns():
+def test_medium_applies_refractive_index():
+    """A non-trivial medium refractive index is applied to compute k and eps
+    (no longer ignored since v1.1)."""
     cfg = SweepConfig(
         particles=ParticlesConfig(
             positions_file="fractal_N128_Df2.0.dat", refractive_index=(1.5, 0.0)
@@ -65,8 +67,9 @@ def test_medium_ignored_warns():
         wavelengths=WavelengthsConfig(start=5.0, stop=6.0, num=1, scale=1.0),
         medium=MediumConfig(refractive_index=(1.3, 0.0)),
     )
-    with pytest.warns(UserWarning, match="no background-medium model"):
-        run_sweep(cfg, base_dir=_DATA_DIR)
+    results = run_sweep(cfg, base_dir=_DATA_DIR)
+    assert len(results) == 1
+    assert results[0]["c_ext"] > 0
 
 
 def test_incident_rotation_identity_at_zero_angle():
