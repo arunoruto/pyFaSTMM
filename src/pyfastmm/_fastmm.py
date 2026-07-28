@@ -56,6 +56,17 @@ def get_tmatrix_size(t_order):
     return (t_order + 1) ** 2 - 1
 
 
+def eps_from_index(n):
+    """Electric permittivity ``eps = m**2`` from a complex refractive index.
+
+    FaSTMM2 works natively in permittivity (see module docstring) -- this
+    is the one-line squaring every caller otherwise has to write by hand.
+    Broadcasts over array-likes.
+    """
+    m = np.asarray(n, dtype=np.complex128)
+    return m**2
+
+
 def _prepare_geometry(coords, radii, eps):
     coords = np.asarray(coords, dtype=np.float64)
     if coords.ndim != 2 or 3 not in coords.shape:

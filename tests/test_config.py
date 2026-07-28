@@ -11,6 +11,7 @@ from pyfastmm._config import (
     IncidentConfig,
     MediumConfig,
     ParticlesConfig,
+    SolverConfig,
     SweepConfig,
     WavelengthsConfig,
     load_config,
@@ -89,6 +90,44 @@ def test_incident_rotation_preserves_geometry():
     d0 = np.linalg.norm(positions[0, :3] - positions[1, :3])
     d1 = np.linalg.norm(rotated[0, :3] - rotated[1, :3])
     assert d0 == pytest.approx(d1)
+
+
+def test_solver_config_truncation_formula_default_and_override():
+    assert SolverConfig().truncation_formula == 0
+    assert SolverConfig(truncation_formula=1).truncation_formula == 1
+
+
+def test_particles_and_medium_share_get_nk_behavior():
+    # Both configs inherit get_nk() from the same mixin -- a fixed tuple
+    # broadcasts identically regardless of which config class it's on.
+    wavelengths = np.array([5.0, 6.0, 7.0])
+    p = ParticlesConfig(refractive_index=(2.0, 0.5))
+    m = MediumConfig(refractive_index=(2.0, 0.5))
+    np.testing.assert_allclose(p.get_nk(wavelengths), m.get_nk(wavelengths))
+    assert p.get_nk(wavelengths).shape == wavelengths.shape
+
+
+def test_sweep_config_run_method_matches_run_sweep_free_function():
+    # SweepConfig.run() is now the canonical implementation; run_sweep()
+    # is a thin wrapper -- both must produce identical results.
+    cfg = SweepConfig(
+        particles=ParticlesConfig(refractive_index=(1.5, 0.01)),
+        wavelengths=WavelengthsConfig(values=[5.0], scale=1.0),
+        solver=dict(N_theta=11, N_phi=1, acc=1),
+    )
+    import pyfastmm._config as config_mod
+
+    orig_load = config_mod.ParticlesConfig.load_positions
+    config_mod.ParticlesConfig.load_positions = lambda *_a, **_kw: np.array(
+        [[-1.5, 0.0, 0.0, 1.0], [1.5, 0.0, 0.0, 1.0]]
+    )
+    try:
+        via_method = cfg.run()
+        via_function = run_sweep(cfg)
+    finally:
+        config_mod.ParticlesConfig.load_positions = orig_load
+
+    assert via_method[0]["c_ext"] == pytest.approx(via_function[0]["c_ext"])
 
 
 def test_run_sweep_small_cluster_two_wavelengths():

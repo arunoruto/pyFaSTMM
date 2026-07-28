@@ -3,7 +3,15 @@
 import numpy as np
 import pytest
 
-from pyfastmm import FaSTMM2
+from pyfastmm import FaSTMM2, eps_from_index
+
+
+def test_eps_from_index_squares_refractive_index():
+    assert eps_from_index(1.5 + 0.01j) == pytest.approx((1.5 + 0.01j) ** 2)
+    np.testing.assert_allclose(
+        eps_from_index([1.5 + 0.01j, 2.0 + 0.0j]),
+        [(1.5 + 0.01j) ** 2, (2.0 + 0.0j) ** 2],
+    )
 
 
 def test_single_sphere_solve():

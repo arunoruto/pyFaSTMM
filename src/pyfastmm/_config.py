@@ -67,36 +67,19 @@ from pyfastmm._fastmm import FaSTMM2
 # ---------------------------------------------------------------------------
 
 
-class ParticlesConfig(BaseModel):
-    """Particle cluster specification (same shape as pyMSTM's)."""
+def _resolve_path(base_dir: str | os.PathLike[str], filepath: str) -> Path:
+    p = Path(filepath)
+    if p.is_absolute():
+        return p
+    return Path(base_dir) / p
 
-    positions_file: str = ""
-    scale: float = 1.0
-    gap_factor: float = 1.0
-    refractive_index: tuple[float, float] = (1.5, 0.0)
+
+class _RefractiveIndexSpec(BaseModel):
+    """Shared ``refractive_index``/``refractive_index_file`` handling used
+    by both :class:`ParticlesConfig` and :class:`MediumConfig`."""
+
+    refractive_index: tuple[float, float] = (1.0, 0.0)
     refractive_index_file: str | None = None
-
-    def load_positions(self, base_dir: str | os.PathLike[str] = "") -> np.ndarray:
-        """Return (N, 4) array ``[x, y, z, radius]`` in physical units.
-
-        Supports ``.dat``, ``.txt``, ``.csv``, ``.pos`` files.
-        Automatically strips comment lines (``#``) for PyFracVAL format.
-
-        *gap_factor* stretches positions (not radii) to separate touching
-        spheres.
-        """
-        path = self._resolve(base_dir, self.positions_file)
-        suffix = Path(path).suffix.lower()
-        if suffix == ".csv":
-            data = np.loadtxt(str(path), delimiter=",")
-        else:  # .dat, .txt, .pos -- whitespace
-            data = np.loadtxt(str(path))
-        if data.ndim == 1:
-            data = data.reshape(-1, 4)
-        data = data * self.scale
-        if self.gap_factor != 1.0:
-            data[:, :3] *= self.gap_factor
-        return data
 
     def get_nk(
         self,
@@ -112,28 +95,49 @@ class ParticlesConfig(BaseModel):
         *refractive_index* as a fixed (wavelength-independent) value.
         """
         if self.refractive_index_file:
-            path = self._resolve(base_dir, self.refractive_index_file)
+            path = _resolve_path(base_dir, self.refractive_index_file)
             data = np.loadtxt(str(path))
-            wl_data = data[:, 0]
-            n_data = data[:, 1]
-            k_data = data[:, 2]
-            n_interp = np.interp(wavelengths_raw, wl_data, n_data)
-            k_interp = np.interp(wavelengths_raw, wl_data, k_data)
+            n_interp = np.interp(wavelengths_raw, data[:, 0], data[:, 1])
+            k_interp = np.interp(wavelengths_raw, data[:, 0], data[:, 2])
             return n_interp + 1j * k_interp
         n_re, n_im = self.refractive_index
         return np.full_like(wavelengths_raw, complex(n_re, n_im), dtype=complex)
+
+
+class ParticlesConfig(_RefractiveIndexSpec):
+    """Particle cluster specification (same shape as pyMSTM's)."""
+
+    positions_file: str = ""
+    scale: float = 1.0
+    gap_factor: float = 1.0
+    refractive_index: tuple[float, float] = (1.5, 0.0)
+
+    def load_positions(self, base_dir: str | os.PathLike[str] = "") -> np.ndarray:
+        """Return (N, 4) array ``[x, y, z, radius]`` in physical units.
+
+        Supports ``.dat``, ``.txt``, ``.csv``, ``.pos`` files.
+        Automatically strips comment lines (``#``) for PyFracVAL format.
+
+        *gap_factor* stretches positions (not radii) to separate touching
+        spheres.
+        """
+        path = _resolve_path(base_dir, self.positions_file)
+        suffix = Path(path).suffix.lower()
+        if suffix == ".csv":
+            data = np.loadtxt(str(path), delimiter=",")
+        else:  # .dat, .txt, .pos -- whitespace
+            data = np.loadtxt(str(path))
+        if data.ndim == 1:
+            data = data.reshape(-1, 4)
+        data = data * self.scale
+        if self.gap_factor != 1.0:
+            data[:, :3] *= self.gap_factor
+        return data
 
     def eps(self) -> complex:
         """Electric permittivity (eps = m**2) from the refractive index."""
         n_re, n_im = self.refractive_index
         return complex(n_re, n_im) ** 2
-
-    @staticmethod
-    def _resolve(base_dir: str | os.PathLike[str], filepath: str) -> Path:
-        p = Path(filepath)
-        if p.is_absolute():
-            return p
-        return Path(base_dir) / p
 
 
 class WavelengthsConfig(BaseModel):
@@ -173,35 +177,11 @@ class WavelengthsConfig(BaseModel):
         return 2.0 * np.pi / self.get_wavelengths_m()
 
 
-class MediumConfig(BaseModel):
+class MediumConfig(_RefractiveIndexSpec):
     """Surrounding medium. FaSTMM2 uses the medium refractive index to
     compute the effective wavenumber ``k = 2*pi * n_medium / wavelength_vac``
     and particle permittivity contrast ``eps_eff = (n_particle / n_medium)**2``,
     fully supporting (possibly absorbing) background media since v1.1."""
-
-    refractive_index: tuple[float, float] = (1.0, 0.0)
-    refractive_index_file: str | None = None
-
-    def get_nk(
-        self,
-        wavelengths_raw: np.ndarray,
-        base_dir: str | os.PathLike[str] = "",
-    ) -> np.ndarray:
-        """Complex refractive index ``n + i*k`` at each wavelength.
-
-        If *refractive_index_file* is set, loads and interpolates (see
-        :meth:`ParticlesConfig.get_nk`).  Otherwise uses the fixed tuple.
-        """
-        if self.refractive_index_file:
-            path = Path(self.refractive_index_file)
-            if not path.is_absolute():
-                path = Path(base_dir) / path
-            data = np.loadtxt(str(path))
-            n_interp = np.interp(wavelengths_raw, data[:, 0], data[:, 1])
-            k_interp = np.interp(wavelengths_raw, data[:, 0], data[:, 2])
-            return n_interp + 1j * k_interp
-        n_re, n_im = self.refractive_index
-        return np.full_like(wavelengths_raw, complex(n_re, n_im), dtype=complex)
 
 
 class IncidentConfig(BaseModel):
@@ -249,6 +229,13 @@ class SolverConfig(BaseModel):
     N_phi: int = 32
     N_ave: int = 0  # 0 = fixed orientation
     halton_init: int = 0
+    truncation_formula: int = 0
+    """Per-sphere Mie truncation formula (see FaSTMM2.set_truncation_formula).
+    0 (default, unchanged from pre-v1.1 behavior): floor(ka + 3*ka**(1/3)),
+    min 6. 1: the more conservative formula -- needed for touching,
+    small-ka, high-refractive-index-contrast clusters (e.g. nanometer-scale
+    metal monomers), where formula 0 under-resolves near-field coupling and
+    under-converges Cext by double-digit percentages."""
 
 
 class OutputConfig(BaseModel):
@@ -268,6 +255,84 @@ class SweepConfig(BaseModel):
     solver: SolverConfig = Field(default_factory=SolverConfig)
     output: OutputConfig = Field(default_factory=OutputConfig)
 
+    def run(
+        self,
+        base_dir: str | os.PathLike[str] = "",
+        progress_callback: Any = None,
+    ) -> list[dict]:
+        """Run FaSTMM2.solve() once per wavelength in the sweep.
+
+        Parameters
+        ----------
+        base_dir : path used to resolve a relative particles.positions_file
+        progress_callback : optional callable(fraction_done: float, wavelength_m: float)
+            called after each wavelength, e.g. to drive a progress bar.
+
+        Returns
+        -------
+        list of dicts, one per wavelength, each the same dict solve() (or
+        compute_tmatrix(), if output.compute_tmatrix is set) returns, plus
+        "wavelength_m" and "k" keys.
+        """
+        positions = self.particles.load_positions(base_dir)
+        positions = self.incident.rotate_positions(positions)
+        coords = positions[:, :3]
+        radii = positions[:, 3]
+        n_spheres = len(radii)
+
+        wavelengths_m = self.wavelengths.get_wavelengths_m()
+        wavelengths_raw = wavelengths_m / self.wavelengths.scale
+
+        nk_particle = self.particles.get_nk(wavelengths_raw, base_dir)
+        nk_medium = self.medium.get_nk(wavelengths_raw, base_dir)
+
+        f = FaSTMM2()
+        solver = self.solver
+        f.set_truncation_formula(solver.truncation_formula)
+        results = []
+        for i, wl in enumerate(wavelengths_m):
+            n_part = nk_particle[i]
+            n_med = nk_medium[i]
+            eps_eff = (n_part / n_med) ** 2
+            eps = np.full(n_spheres, eps_eff)
+            k = 2.0 * np.pi * n_med / wl
+            if self.output.compute_tmatrix:
+                result = f.compute_tmatrix(
+                    coords,
+                    radii,
+                    eps,
+                    complex(k),
+                    t_order=self.output.t_order,
+                    formulation=solver.formulation,
+                    acc=solver.acc,
+                    tol=solver.tolerance,
+                    restart=solver.restart,
+                    max_iter=solver.max_iterations,
+                )
+            else:
+                result = f.solve(
+                    coords,
+                    radii,
+                    eps,
+                    complex(k),
+                    N_theta=solver.N_theta,
+                    N_phi=solver.N_phi,
+                    N_ave=solver.N_ave,
+                    halton_init=solver.halton_init,
+                    formulation=solver.formulation,
+                    acc=solver.acc,
+                    tol=solver.tolerance,
+                    restart=solver.restart,
+                    max_iter=solver.max_iterations,
+                )
+            result["wavelength_m"] = float(wl)
+            result["k"] = complex(k)
+            results.append(result)
+            if progress_callback is not None:
+                progress_callback((i + 1) / len(wavelengths_m), float(wl))
+
+        return results
+
 
 # ---------------------------------------------------------------------------
 # Public API
@@ -286,75 +351,5 @@ def run_sweep(
     base_dir: str | os.PathLike[str] = "",
     progress_callback: Any = None,
 ) -> list[dict]:
-    """Run FaSTMM2.solve() once per wavelength in the sweep.
-
-    Parameters
-    ----------
-    config : SweepConfig
-    base_dir : path used to resolve a relative particles.positions_file
-    progress_callback : optional callable(fraction_done: float, wavelength_m: float)
-        called after each wavelength, e.g. to drive a progress bar.
-
-    Returns
-    -------
-    list of dicts, one per wavelength, each the same dict solve() (or
-    compute_tmatrix(), if output.compute_tmatrix is set) returns, plus
-    "wavelength_m" and "k" keys.
-    """
-    positions = config.particles.load_positions(base_dir)
-    positions = config.incident.rotate_positions(positions)
-    coords = positions[:, :3]
-    radii = positions[:, 3]
-    n_spheres = len(radii)
-
-    wavelengths_m = config.wavelengths.get_wavelengths_m()
-    wavelengths_raw = wavelengths_m / config.wavelengths.scale
-
-    nk_particle = config.particles.get_nk(wavelengths_raw, base_dir)
-    nk_medium = config.medium.get_nk(wavelengths_raw, base_dir)
-
-    f = FaSTMM2()
-    solver = config.solver
-    results = []
-    for i, wl in enumerate(wavelengths_m):
-        n_part = nk_particle[i]
-        n_med = nk_medium[i]
-        eps_eff = (n_part / n_med) ** 2
-        eps = np.full(n_spheres, eps_eff)
-        k = 2.0 * np.pi * n_med / wl
-        if config.output.compute_tmatrix:
-            result = f.compute_tmatrix(
-                coords,
-                radii,
-                eps,
-                complex(k),
-                t_order=config.output.t_order,
-                formulation=solver.formulation,
-                acc=solver.acc,
-                tol=solver.tolerance,
-                restart=solver.restart,
-                max_iter=solver.max_iterations,
-            )
-        else:
-            result = f.solve(
-                coords,
-                radii,
-                eps,
-                complex(k),
-                N_theta=solver.N_theta,
-                N_phi=solver.N_phi,
-                N_ave=solver.N_ave,
-                halton_init=solver.halton_init,
-                formulation=solver.formulation,
-                acc=solver.acc,
-                tol=solver.tolerance,
-                restart=solver.restart,
-                max_iter=solver.max_iterations,
-            )
-        result["wavelength_m"] = float(wl)
-        result["k"] = complex(k)
-        results.append(result)
-        if progress_callback is not None:
-            progress_callback((i + 1) / len(wavelengths_m), float(wl))
-
-    return results
+    """Run a sweep. Thin wrapper around :meth:`SweepConfig.run`."""
+    return config.run(base_dir, progress_callback)
