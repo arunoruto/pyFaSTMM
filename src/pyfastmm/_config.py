@@ -60,7 +60,7 @@ from typing import Any
 import numpy as np
 from pydantic import BaseModel, Field, model_validator
 
-from pyfastmm._cluster import Cluster
+from pyfastmm._cluster import FaSTMM
 from pyfastmm._fastmm import FaSTMM2
 
 # ---------------------------------------------------------------------------
@@ -247,7 +247,7 @@ class SolverConfig(BaseModel):
     under-converges Cext by double-digit percentages."""
     n_threads: int = 1
     """OpenMP thread count for the GMRES matvec/solver/far-field hot paths
-    (see Cluster.solve()'s docstring for measured scaling and why 1, not
+    (see FaSTMM.solve()'s docstring for measured scaling and why 1, not
     "all cores", is the default -- this matters especially for a sweep
     over many wavelengths/clusters run under its own process-level
     parallelism, e.g. spcwth's campaign.py, where workers * n_threads can
@@ -302,19 +302,19 @@ class SweepConfig(BaseModel):
         nk_medium = self.medium.get_nk(wavelengths_raw, base_dir)
 
         solver = self.solver
-        # Only matters for the compute_tmatrix branch below -- Cluster.solve()
+        # Only matters for the compute_tmatrix branch below -- FaSTMM.solve()
         # passes truncation_formula explicitly on every call instead.
         FaSTMM2().set_truncation_formula(solver.truncation_formula)
         results = []
         for i, wl in enumerate(wavelengths_m):
-            cluster = Cluster(
+            fastmm = FaSTMM(
                 coords,
                 radii,
                 refractive_index=nk_particle[i],
                 medium_refractive_index=nk_medium[i],
             )
             if self.output.compute_tmatrix:
-                result = cluster.compute_tmatrix(
+                result = fastmm.compute_tmatrix(
                     wl,
                     t_order=self.output.t_order,
                     formulation=solver.formulation,
@@ -325,7 +325,7 @@ class SweepConfig(BaseModel):
                     n_threads=solver.n_threads,
                 )
             else:
-                result = cluster.solve(
+                result = fastmm.solve(
                     wl,
                     N_theta=solver.N_theta,
                     N_phi=solver.N_phi,

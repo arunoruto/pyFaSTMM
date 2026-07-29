@@ -1,4 +1,4 @@
-"""Cluster -- an ergonomic, class-driven single-cluster API for FaSTMM2.
+"""FaSTMM -- an ergonomic, class-driven single-cluster API, version-aware.
 
 FaSTMM2.solve() itself is deliberately minimal (geometry in, arrays out,
 no state) -- but every real caller ends up needing the same handful of
@@ -8,9 +8,19 @@ medium wavenumber), correcting for the medium's incident-flux
 normalization, and rotating the cluster to emulate tilted incidence
 (FaSTMM2's beam is fixed along +z). Two independent call sites --
 SweepConfig.run() here and t-bench's fastmm2-python adapter -- used to
-each reimplement all of that by hand. Cluster is the one shared
+each reimplement all of that by hand. FaSTMM is the one shared
 implementation both now build on, so a bug in this logic only needs
 fixing once.
+
+Named after the software family (FaSTMM), not the specific solver
+version (FaSTMM2) -- `version` picks which one, defaulting to 2, the
+only one that exists today. This is deliberately NOT the same axis as
+`formulation` (0=STMM, 1=FaSTMM, 2=FaSTMM2/MLFMM), which selects an
+algorithm *within* a given version: a hypothetical FaSTMM3 would almost
+certainly ship its own compiled backend and quite possibly its own set
+of formulations, which is exactly why version dispatch and formulation
+validation are two separate, nested match/case checks below rather than
+one flat list of "valid combinations".
 """
 
 from __future__ import annotations
@@ -33,7 +43,7 @@ def rotate_for_incidence(coords, polar_deg, azimuthal_deg):
     method's docstring for the order derivation and the cross-tool
     validation against MSTM (R = Ry @ Rz, not Rz @ Ry, once both angles
     are simultaneously nonzero). Public (unlike that method) because a
-    caller that isn't going through SweepConfig/Cluster -- e.g. writing
+    caller that isn't going through SweepConfig/FaSTMM -- e.g. writing
     geometry for the standalone FaSTMM2 CLI binary, which has no
     incident-angle flag of its own -- needs the exact same rotation."""
     if polar_deg == 0.0 and azimuthal_deg == 0.0:
@@ -52,7 +62,7 @@ def rotate_for_incidence(coords, polar_deg, azimuthal_deg):
 
 
 def radiative_transfer_phase_function(result, n_theta=None):
-    """Rescale a ``Cluster.solve()`` result's raw Mueller S11/S12 to the
+    """Rescale a ``FaSTMM.solve()`` result's raw Mueller S11/S12 to the
     radiative-transfer phase-function convention (``integral(S11 dOmega)
     == 4*pi``).
 
@@ -61,12 +71,12 @@ def radiative_transfer_phase_function(result, n_theta=None):
     for internal use, but not what callers plotting a phase function or
     computing DoLP actually want. Requires ``result`` to carry
     ``"mueller"``, ``"k_medium"``, and ``"c_ext_minus_c_abs"`` (all present
-    in ``Cluster.solve()``'s return value).
+    in ``FaSTMM.solve()``'s return value).
 
     Parameters
     ----------
     result : dict
-        A ``Cluster.solve()`` result (fixed orientation, i.e. ``N_ave=0``
+        A ``FaSTMM.solve()`` result (fixed orientation, i.e. ``N_ave=0``
         -- the raw mueller layout this function assumes only applies then).
     n_theta : int, optional
         Only the first ``n_theta`` rows (the phi=0 cut) are returned;
@@ -86,9 +96,26 @@ def radiative_transfer_phase_function(result, n_theta=None):
     return np.column_stack([theta_deg, s11, s12])
 
 
-class Cluster:
+def _unsupported_version(version) -> ValueError:
+    return ValueError(
+        f"pyfastmm.FaSTMM only supports version=2 (FaSTMM2); got version={version!r}"
+    )
+
+
+def _validate_formulation_v2(formulation) -> None:
+    match formulation:
+        case 0 | 1 | 2:
+            return
+        case _:
+            raise ValueError(
+                f"formulation={formulation!r} is not supported by FaSTMM "
+                "version 2 (valid: 0=STMM, 1=FaSTMM, 2=FaSTMM2/MLFMM)"
+            )
+
+
+class FaSTMM:
     """A cluster of spherical monomers, optionally embedded in a host
-    medium.
+    medium, solved with a chosen FaSTMM version.
 
     Parameters
     ----------
@@ -104,6 +131,11 @@ class Cluster:
     medium_refractive_index : complex, default ``1.0+0.0j`` (vacuum)
         Host medium refractive index, vacuum-referenced. A nonzero
         imaginary part models an absorbing host.
+    version : int, default 2
+        Which FaSTMM solver version to use. Only 2 (FaSTMM2) exists
+        today; any other value raises ValueError at call time (not
+        construction time -- see ``solve()``). Not the same thing as
+        ``formulation`` (see module docstring).
     """
 
     def __init__(
@@ -112,6 +144,7 @@ class Cluster:
         radii,
         refractive_index,
         medium_refractive_index: complex = 1.0 + 0.0j,
+        version: int = 2,
     ):
         self.coords = np.asarray(coords, dtype=np.float64)
         self.radii = np.asarray(radii, dtype=np.float64)
@@ -120,6 +153,7 @@ class Cluster:
             np.asarray(refractive_index, dtype=np.complex128), (n,)
         ).copy()
         self.medium_refractive_index = complex(medium_refractive_index)
+        self.version = version
 
     def _eps_and_k(self, wavelength_vacuum):
         k_medium = k_in_medium(
@@ -172,7 +206,54 @@ class Cluster:
         single, one-off solve (see ``set_num_threads()``'s docstring for
         measured scaling -- more isn't always better past your physical
         core count).
+
+        Raises
+        ------
+        ValueError
+            If ``self.version`` isn't a supported FaSTMM version, or
+            ``formulation`` isn't valid for that version.
         """
+        match self.version:
+            case 2:
+                return self._solve_v2(
+                    wavelength_vacuum,
+                    incident_polar_deg=incident_polar_deg,
+                    incident_azimuthal_deg=incident_azimuthal_deg,
+                    N_theta=N_theta,
+                    N_phi=N_phi,
+                    N_ave=N_ave,
+                    halton_init=halton_init,
+                    formulation=formulation,
+                    acc=acc,
+                    tol=tol,
+                    restart=restart,
+                    max_iter=max_iter,
+                    truncation_formula=truncation_formula,
+                    n_threads=n_threads,
+                )
+            case _:
+                raise _unsupported_version(self.version)
+
+    def _solve_v2(
+        self,
+        wavelength_vacuum,
+        *,
+        incident_polar_deg,
+        incident_azimuthal_deg,
+        N_theta,
+        N_phi,
+        N_ave,
+        halton_init,
+        formulation,
+        acc,
+        tol,
+        restart,
+        max_iter,
+        truncation_formula,
+        n_threads,
+    ):
+        _validate_formulation_v2(formulation)
+
         eps, k_medium = self._eps_and_k(wavelength_vacuum)
         coords = rotate_for_incidence(
             self.coords, incident_polar_deg, incident_azimuthal_deg
@@ -218,7 +299,43 @@ class Cluster:
         """Compute the cluster's T-matrix at ``wavelength_vacuum``. Same
         medium transform as ``solve()``; no flux-normalization correction
         applies here (the T-matrix has no cross sections to correct).
-        ``n_threads`` defaults to 1 -- see ``solve()``'s docstring."""
+        ``n_threads`` defaults to 1 -- see ``solve()``'s docstring.
+
+        Raises
+        ------
+        ValueError
+            If ``self.version`` isn't a supported FaSTMM version, or
+            ``formulation`` isn't valid for that version.
+        """
+        match self.version:
+            case 2:
+                return self._compute_tmatrix_v2(
+                    wavelength_vacuum,
+                    t_order=t_order,
+                    formulation=formulation,
+                    acc=acc,
+                    tol=tol,
+                    restart=restart,
+                    max_iter=max_iter,
+                    n_threads=n_threads,
+                )
+            case _:
+                raise _unsupported_version(self.version)
+
+    def _compute_tmatrix_v2(
+        self,
+        wavelength_vacuum,
+        *,
+        t_order,
+        formulation,
+        acc,
+        tol,
+        restart,
+        max_iter,
+        n_threads,
+    ):
+        _validate_formulation_v2(formulation)
+
         eps, k_medium = self._eps_and_k(wavelength_vacuum)
         result = FaSTMM2().compute_tmatrix(
             self.coords,

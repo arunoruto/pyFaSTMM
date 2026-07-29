@@ -1,6 +1,6 @@
 """pyfastmm -- Python bindings for FaSTMM2 (Fast Superposition T-Matrix Method)."""
 
-from pyfastmm._cluster import Cluster, radiative_transfer_phase_function, rotate_for_incidence
+from pyfastmm._cluster import FaSTMM, radiative_transfer_phase_function, rotate_for_incidence
 from pyfastmm._fastmm import (
     FaSTMM2,
     eps_from_index,
@@ -11,7 +11,7 @@ from pyfastmm._fastmm import (
 )
 
 __all__ = [
-    "Cluster",
+    "FaSTMM",
     "FaSTMM2",
     "eps_from_index",
     "eps_relative_to_medium",

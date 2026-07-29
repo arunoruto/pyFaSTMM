@@ -173,19 +173,19 @@ def test_solver_config_n_threads_default_and_override():
 
 
 def test_sweep_config_run_passes_n_threads_through(monkeypatch):
-    """SolverConfig.n_threads must reach Cluster.solve(), not silently
-    fall back to Cluster's own default -- pin the actual value threaded
+    """SolverConfig.n_threads must reach FaSTMM.solve(), not silently
+    fall back to FaSTMM's own default -- pin the actual value threaded
     through, not just that a solve happens to succeed."""
     import pyfastmm._config as config_mod
 
     seen = {}
-    orig_solve = config_mod.Cluster.solve
+    orig_solve = config_mod.FaSTMM.solve
 
     def spy_solve(self, *args, **kwargs):
         seen["n_threads"] = kwargs.get("n_threads")
         return orig_solve(self, *args, **kwargs)
 
-    monkeypatch.setattr(config_mod.Cluster, "solve", spy_solve)
+    monkeypatch.setattr(config_mod.FaSTMM, "solve", spy_solve)
 
     cfg = SweepConfig(
         particles=ParticlesConfig(
