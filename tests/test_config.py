@@ -172,6 +172,15 @@ def test_solver_config_n_threads_default_and_override():
     assert SolverConfig(n_threads=8).n_threads == 8
 
 
+def test_solver_config_n_threads_accepts_negative_and_float():
+    """SolverConfig.n_threads must accept the same negative-offset and
+    float-fraction shapes resolve_n_threads() supports -- pydantic must not
+    reject or silently coerce them (e.g. a float fraction truncated to an
+    int would break the "fraction of cpu_count" meaning)."""
+    assert SolverConfig(n_threads=-2).n_threads == -2
+    assert SolverConfig(n_threads=0.5).n_threads == pytest.approx(0.5)
+
+
 def test_sweep_config_run_passes_n_threads_through(monkeypatch):
     """SolverConfig.n_threads must reach FaSTMM.solve(), not silently
     fall back to FaSTMM's own default -- pin the actual value threaded

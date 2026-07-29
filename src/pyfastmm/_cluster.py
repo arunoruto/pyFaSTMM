@@ -180,7 +180,7 @@ class FaSTMM:
         restart=5,
         max_iter=50,
         truncation_formula=0,
-        n_threads: int = 1,
+        n_threads: int | float = 1,
     ):
         """Solve for the Mueller/Jones matrix and cross sections at
         ``wavelength_vacuum`` (same length unit as ``coords``/``radii``).
@@ -205,9 +205,10 @@ class FaSTMM:
         thread count without asking for it. Raise it explicitly for a
         single, one-off solve (see ``set_num_threads()``'s docstring for
         measured scaling -- more isn't always better past your physical
-        core count). May also be negative, meaning an offset from
-        ``os.cpu_count()`` (e.g. ``-2`` to leave 2 CPUs free) -- see
-        ``resolve_n_threads()``.
+        core count). May also be negative (an offset from
+        ``os.cpu_count()``, e.g. ``-2`` to leave 2 CPUs free) or a float
+        in ``(0, 1]`` (a fraction of ``os.cpu_count()``, e.g. ``0.5`` for
+        half the machine) -- see ``resolve_n_threads()``.
 
         Raises
         ------
@@ -296,7 +297,7 @@ class FaSTMM:
         tol=1e-4,
         restart=5,
         max_iter=50,
-        n_threads: int = 1,
+        n_threads: int | float = 1,
     ):
         """Compute the cluster's T-matrix at ``wavelength_vacuum``. Same
         medium transform as ``solve()``; no flux-normalization correction

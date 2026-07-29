@@ -10,9 +10,13 @@ from pyfastmm import FaSTMM2, eps_from_index, resolve_n_threads
 
 def test_eps_from_index_squares_refractive_index():
     assert eps_from_index(1.5 + 0.01j) == pytest.approx((1.5 + 0.01j) ** 2)
+    np.testing.assert_allclose(
+        eps_from_index([1.5 + 0.01j, 2.0 + 0.0j]),
+        [(1.5 + 0.01j) ** 2, (2.0 + 0.0j) ** 2],
+    )
 
 
-def test_resolve_n_threads_positive_passes_through():
+def test_resolve_n_threads_positive_int_passes_through():
     assert resolve_n_threads(1) == 1
     assert resolve_n_threads(5) == 5
 
@@ -31,10 +35,31 @@ def test_resolve_n_threads_negative_offset_clamps_to_at_least_one():
 def test_resolve_n_threads_zero_raises():
     with pytest.raises(ValueError):
         resolve_n_threads(0)
-    np.testing.assert_allclose(
-        eps_from_index([1.5 + 0.01j, 2.0 + 0.0j]),
-        [(1.5 + 0.01j) ** 2, (2.0 + 0.0j) ** 2],
-    )
+
+
+def test_resolve_n_threads_float_fraction_of_cpu_count():
+    """A float in (0, 1] is a *fraction* of cpu_count -- e.g. 0.5 (or the
+    literal 1/2) means half the machine's CPUs, rounded. This is distinct
+    from the int 1, which means exactly one thread, not "100%"."""
+    cpu_count = os.cpu_count() or 1
+    assert resolve_n_threads(1 / 2) == round(cpu_count * 0.5)
+    assert resolve_n_threads(0.5) == round(cpu_count * 0.5)
+    assert resolve_n_threads(1.0) == cpu_count
+    assert resolve_n_threads(1) == 1  # int 1 != float 1.0's "100%" reading
+
+
+def test_resolve_n_threads_float_fraction_clamps_to_at_least_one():
+    # A tiny fraction on any real machine should still resolve to >= 1.
+    assert resolve_n_threads(0.001) >= 1
+
+
+def test_resolve_n_threads_negative_offset_past_cpu_count_clamps_to_one():
+    """On a machine with fewer CPUs than the requested offset (e.g. -6 on
+    a 4-core box), cpu_count + n_threads goes negative -- must clamp to 1,
+    not return a negative or zero thread count."""
+    assert resolve_n_threads(-6) == max(1, (os.cpu_count() or 1) - 6)
+    if (os.cpu_count() or 1) < 6:
+        assert resolve_n_threads(-6) == 1
 
 
 def test_single_sphere_solve():

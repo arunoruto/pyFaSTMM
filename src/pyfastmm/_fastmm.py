@@ -49,27 +49,42 @@ except ImportError as exc:  # pragma: no cover
     ) from exc
 
 
-def resolve_n_threads(n_threads: int) -> int:
-    """Resolve a thread count, supporting negative values as an offset from
-    ``os.cpu_count()`` -- e.g. ``n_threads=-2`` means "leave 2 CPUs free",
-    resolving to ``cpu_count - 2``. Positive values pass through unchanged.
-    Clamped to at least 1 (a too-negative offset doesn't resolve to zero or
-    negative threads). ``0`` is rejected: it isn't a meaningful thread count
-    under either the positive ("exactly N threads") or negative ("N fewer
-    than all") reading.
+def resolve_n_threads(n_threads: int | float) -> int:
+    """Resolve a thread count. Three input shapes are supported:
+
+    - A ``float`` in ``(0, 1]``: a *fraction* of ``os.cpu_count()`` --
+      e.g. ``0.5`` (or ``1/2``) means "half the machine's CPUs", ``1.0``
+      means "all of them". Rounded to the nearest int, clamped to at
+      least 1. This only applies to actual ``float`` values -- the int
+      ``1`` is *not* treated as a 100% fraction, it means exactly one
+      thread (see the negative case below for why that distinction
+      matters: an int is always an absolute/offset count, a float in
+      this range is always a fraction).
+    - A positive ``int`` (or a ``float`` outside ``(0, 1]``, e.g. ``4.0``):
+      an absolute thread count, used as-is (rounded if a float).
+    - A negative ``int`` or ``float``: an offset from ``os.cpu_count()``
+      -- e.g. ``-2`` means "leave 2 CPUs free", resolving to
+      ``cpu_count - 2``. Clamped to at least 1 -- asking to leave more
+      CPUs free than the machine has (e.g. ``-6`` on a 4-core machine)
+      resolves to 1, not a negative or zero thread count.
+
+    ``0`` is rejected: it isn't a meaningful thread count under any of
+    the above readings.
 
     New in v1.3.
     """
-    if n_threads > 0:
-        return n_threads
+    cpu_count = os.cpu_count() or 1
+    if isinstance(n_threads, float) and 0 < n_threads <= 1:
+        return max(1, round(cpu_count * n_threads))
     if n_threads == 0:
         raise ValueError(
-            "n_threads must not be 0 -- use a positive thread count, or a "
-            "negative offset from os.cpu_count() (e.g. -1 to leave one "
-            "CPU free)"
+            "n_threads must not be 0 -- use a positive thread count, a "
+            "fraction in (0, 1] of os.cpu_count(), or a negative offset "
+            "from it (e.g. -1 to leave one CPU free)"
         )
-    cpu_count = os.cpu_count() or 1
-    return max(1, cpu_count + n_threads)
+    if n_threads > 0:
+        return round(n_threads)
+    return max(1, round(cpu_count + n_threads))
 
 
 def get_tmatrix_size(t_order):
@@ -195,7 +210,7 @@ class FaSTMM2:
         """
         self._ext.fastmm2_f2py_bindings.truncation_formula = formula
 
-    def set_num_threads(self, n: int) -> None:
+    def set_num_threads(self, n: int | float) -> None:
         """Set the OpenMP thread count used by the parallel regions in the
         GMRES matrix-vector product (the per-iteration hot path), the
         solver, and far-field evaluation -- all already built with
@@ -243,7 +258,7 @@ class FaSTMM2:
         restart=5,
         max_iter=50,
         truncation_formula: int | None = None,
-        n_threads: int | None = None,
+        n_threads: int | float | None = None,
     ):
         """Solve for the Mueller matrix (and, for fixed orientation, Jones
         matrix) and cross sections of a cluster of spherical monomers.
@@ -364,7 +379,7 @@ class FaSTMM2:
         tol=1e-4,
         restart=5,
         max_iter=50,
-        n_threads: int | None = None,
+        n_threads: int | float | None = None,
     ):
         """Compute the T-matrix of a cluster of spherical monomers.
 

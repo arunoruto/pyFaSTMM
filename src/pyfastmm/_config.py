@@ -245,7 +245,7 @@ class SolverConfig(BaseModel):
     small-ka, high-refractive-index-contrast clusters (e.g. nanometer-scale
     metal monomers), where formula 0 under-resolves near-field coupling and
     under-converges Cext by double-digit percentages."""
-    n_threads: int = 1
+    n_threads: int | float = 1
     """OpenMP thread count for the GMRES matvec/solver/far-field hot paths
     (see FaSTMM.solve()'s docstring for measured scaling and why 1, not
     "all cores", is the default -- this matters especially for a sweep
