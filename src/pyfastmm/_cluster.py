@@ -25,14 +25,17 @@ from pyfastmm._fastmm import (
 )
 
 
-def _rotate_for_incidence(coords, polar_deg, azimuthal_deg):
+def rotate_for_incidence(coords, polar_deg, azimuthal_deg):
     """Rotate ``coords`` so FaSTMM2's fixed +z incident beam is physically
     equivalent to illuminating the *unrotated* cluster from
     ``(polar_deg, azimuthal_deg)``. Same validated rotation as
     ``pyfastmm._config.IncidentConfig.rotate_positions`` -- see that
     method's docstring for the order derivation and the cross-tool
     validation against MSTM (R = Ry @ Rz, not Rz @ Ry, once both angles
-    are simultaneously nonzero)."""
+    are simultaneously nonzero). Public (unlike that method) because a
+    caller that isn't going through SweepConfig/Cluster -- e.g. writing
+    geometry for the standalone FaSTMM2 CLI binary, which has no
+    incident-angle flag of its own -- needs the exact same rotation."""
     if polar_deg == 0.0 and azimuthal_deg == 0.0:
         return coords
 
@@ -161,7 +164,7 @@ class Cluster:
         the caller re-deriving them.
         """
         eps, k_medium = self._eps_and_k(wavelength_vacuum)
-        coords = _rotate_for_incidence(
+        coords = rotate_for_incidence(
             self.coords, incident_polar_deg, incident_azimuthal_deg
         )
 
