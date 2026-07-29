@@ -67,6 +67,56 @@ def eps_from_index(n):
     return m**2
 
 
+# --- Host-medium helpers ---------------------------------------------------
+#
+# FaSTMM2 has no separate "medium" input -- solve()/compute_tmatrix() just
+# take a per-particle eps and a single k. A (possibly absorbing) host
+# medium is modeled by transforming both: the particle's permittivity
+# *relative to the medium* instead of relative to vacuum, and a complex
+# wavenumber *in* the medium instead of the vacuum one. These three
+# functions are the shared implementation of that transform -- used by
+# SweepConfig.run() (this package) and t-bench's fastmm2-python adapter,
+# which independently need the exact same formulas since neither one goes
+# through the other.
+
+
+def eps_relative_to_medium(n_particle, n_medium):
+    """Particle permittivity relative to a host medium:
+    ``eps_eff = (n_particle / n_medium)**2``. With a vacuum medium
+    (``n_medium == 1+0j``) this is exactly ``eps_from_index(n_particle)``.
+    """
+    return eps_from_index(np.asarray(n_particle, dtype=np.complex128) / n_medium)
+
+
+def k_in_medium(k_vacuum, n_medium):
+    """Wavenumber inside a host medium: ``k_medium = k_vacuum * n_medium``
+    -- complex (absorbing) whenever ``n_medium`` has a nonzero imaginary
+    part. With a vacuum medium this is exactly ``k_vacuum`` unchanged.
+    """
+    return k_vacuum * n_medium
+
+
+def medium_flux_norm(n_medium):
+    """Cross-section correction factor for a host medium.
+
+    FaSTMM2's ``cross_sections()``/``sphere_absorbtion2()`` (which produce
+    ``c_ext``/``c_abs``/``c_ext_minus_c_abs``) implicitly assume vacuum-like
+    incident-flux normalization (Poynting flux ~ ``|E|**2``); a real host
+    medium's flux instead scales as ``Re(n_medium) * |E|**2``, so those
+    three cross sections need multiplying by this factor. Confirmed against
+    MSTM (which models this correctly) for iron-in-olivine clusters: up to
+    ~46% off without this factor, <0.03% with it, for single sphere,
+    touching pair, 4-chain, and a real 32-sphere fractal aggregate.
+
+    Deliberately *not* applicable to the far-field-integrated ``c_sca``
+    (from ``compute_cluster_fields_far``) -- that value has its own,
+    separate reliability problem in the deep-Rayleigh regime, unrelated to
+    and not addressed by this correction (see space-weathering's PLAN.md).
+    With a vacuum medium this returns exactly ``1.0`` (a no-op).
+    """
+    return complex(n_medium).real
+
+
 def _prepare_geometry(coords, radii, eps):
     coords = np.asarray(coords, dtype=np.float64)
     if coords.ndim != 2 or 3 not in coords.shape:

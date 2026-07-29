@@ -60,7 +60,12 @@ from typing import Any
 import numpy as np
 from pydantic import BaseModel, Field, model_validator
 
-from pyfastmm._fastmm import FaSTMM2
+from pyfastmm._fastmm import (
+    FaSTMM2,
+    eps_relative_to_medium,
+    k_in_medium,
+    medium_flux_norm,
+)
 
 # ---------------------------------------------------------------------------
 # Pydantic models
@@ -293,9 +298,8 @@ class SweepConfig(BaseModel):
         for i, wl in enumerate(wavelengths_m):
             n_part = nk_particle[i]
             n_med = nk_medium[i]
-            eps_eff = (n_part / n_med) ** 2
-            eps = np.full(n_spheres, eps_eff)
-            k = 2.0 * np.pi * n_med / wl
+            eps = np.full(n_spheres, eps_relative_to_medium(n_part, n_med))
+            k = k_in_medium(2.0 * np.pi / wl, n_med)
             if self.output.compute_tmatrix:
                 result = f.compute_tmatrix(
                     coords,
@@ -325,21 +329,9 @@ class SweepConfig(BaseModel):
                     restart=solver.restart,
                     max_iter=solver.max_iterations,
                 )
-                # FaSTMM2's cross_sections()/sphere_absorbtion2() (which
-                # compute c_ext/c_abs/c_ext_minus_c_abs) implicitly assume
-                # vacuum-like incident-flux normalization (Poynting flux ~
-                # |E|^2, no medium factor) -- a real host medium needs an
-                # extra Re(n_medium), since flux ~ Re(n_medium)*|E|^2.
-                # Confirmed against MSTM (which does model this) across
-                # single sphere, touching pair, 4-chain, and a real 32-
-                # sphere fractal aggregate in an absorbing olivine-like
-                # medium: agreement improves from ~46% off to <0.03% with
-                # this correction. NOT applied to c_sca (the far-field-
-                # integrated Csca from compute_cluster_fields_far) -- that
-                # value has its own, separate reliability problem in the
-                # deep-Rayleigh regime (unrelated to this fix, see
-                # space-weathering's PLAN.md) that this wouldn't address.
-                flux_norm = float(n_med.real)
+                # See medium_flux_norm()'s docstring: FaSTMM2's raw cross
+                # sections need this correction for a non-vacuum medium.
+                flux_norm = medium_flux_norm(n_med)
                 result["c_ext"] *= flux_norm
                 result["c_abs"] *= flux_norm
                 result["c_ext_minus_c_abs"] *= flux_norm
