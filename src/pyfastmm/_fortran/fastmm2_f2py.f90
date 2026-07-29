@@ -18,6 +18,7 @@ use solver
 use mie
 use orientation_averaging
 use T_matrix
+use omp_lib
 implicit none
 
 !
@@ -31,6 +32,23 @@ implicit none
 integer, save :: truncation_formula = 0
 
 contains
+
+!
+!  Set the OpenMP thread count used by the parallel regions in matvec's
+!  matrix-vector product (the GMRES hot path), solver.f90, and mie.f90's
+!  far-field evaluation (all already !$omp-parallel and built with
+!  -fopenmp -- this just makes the thread count controllable from Python
+!  instead of being fixed at whatever OMP_NUM_THREADS happened to be when
+!  the process started, which libgomp reads once and then ignores further
+!  changes to). Calls the standard omp_set_num_threads() runtime function;
+!  affects the whole process (OpenMP has no per-call thread count), same
+!  process-global caveat as truncation_formula above.
+!
+subroutine fastmm2_set_num_threads(n)
+    implicit none
+    integer, intent(in) :: n
+    call omp_set_num_threads(n)
+end subroutine fastmm2_set_num_threads
 
 !
 !  Build the sphere(:) array (data_struct, internal-only -- never an f2py

@@ -89,6 +89,33 @@ def test_complex_k_absorbing_medium_no_nan():
     )
 
 
+def test_set_num_threads_does_not_change_results():
+    """Thread count must be purely a performance knob -- results have to
+    be identical (well within GMRES/quadrature tolerance) regardless of
+    how many OpenMP threads the matvec/solver/far-field code use."""
+    f = FaSTMM2()
+    kwargs = dict(
+        coords=[[-2.0, 0.0, 0.0], [2.0, 0.0, 0.0]],
+        radii=[1.0, 1.0],
+        eps=[2.5 + 0.1j, 2.5 + 0.1j],
+        k=1.0,
+        N_theta=11,
+        N_phi=1,
+        tol=1e-6,
+    )
+    results = [f.solve(**kwargs, n_threads=n) for n in (1, 2, 4)]
+    for r in results[1:]:
+        assert r["c_ext"] == pytest.approx(results[0]["c_ext"], rel=1e-10)
+        assert r["c_abs"] == pytest.approx(results[0]["c_abs"], rel=1e-10)
+        # atol matters here: some Mueller entries are near-zero by symmetry
+        # for this cluster, where differing OpenMP reduction order across
+        # thread counts leaves relative-only comparison noisy despite the
+        # absolute difference being ~1e-18 (physically negligible).
+        np.testing.assert_allclose(
+            r["mueller"], results[0]["mueller"], rtol=1e-8, atol=1e-10
+        )
+
+
 def test_orientation_average_matches_fixed_for_single_sphere():
     """A single sphere is rotationally symmetric, so its orientation-averaged
     cross sections must equal the fixed-orientation ones (independent of the

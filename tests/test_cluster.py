@@ -137,3 +137,23 @@ def test_radiative_transfer_phase_function_normalizes_to_4pi():
     # The convenience function must match the same math for the phi=0 cut.
     pf = radiative_transfer_phase_function(result, n_theta=n_theta)
     np.testing.assert_allclose(pf[:, 1], s11[:n_theta])
+
+
+def test_n_threads_defaults_to_one_and_does_not_change_results():
+    """n_threads defaults to 1 (not "all cores") -- see solve()'s
+    docstring for why -- and, like set_num_threads() itself, must be a
+    pure performance knob: results identical regardless of value."""
+    import inspect
+
+    assert inspect.signature(Cluster.solve).parameters["n_threads"].default == 1
+    assert inspect.signature(Cluster.compute_tmatrix).parameters["n_threads"].default == 1
+
+    cluster = Cluster(
+        [[-1.5, 0.0, 0.0], [1.5, 0.0, 0.0]], [1.0, 1.0],
+        refractive_index=2.5 + 0.1j, medium_refractive_index=1.3 + 0.0j,
+    )
+    results = [
+        cluster.solve(5.0, N_theta=11, N_phi=1, n_threads=n) for n in (1, 2, 4)
+    ]
+    for r in results[1:]:
+        assert r["c_ext"] == pytest.approx(results[0]["c_ext"], rel=1e-10)

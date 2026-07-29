@@ -146,6 +146,7 @@ class Cluster:
         restart=5,
         max_iter=50,
         truncation_formula=0,
+        n_threads: int = 1,
     ):
         """Solve for the Mueller/Jones matrix and cross sections at
         ``wavelength_vacuum`` (same length unit as ``coords``/``radii``).
@@ -162,6 +163,15 @@ class Cluster:
         ``"eps"`` (the per-particle permittivity actually used), mainly
         so ``radiative_transfer_phase_function()`` can use them without
         the caller re-deriving them.
+
+        ``n_threads`` defaults to 1 (*not* "use all cores") -- deliberately
+        conservative, since a caller solving many clusters across its own
+        process- or thread-level parallelism (e.g. a campaign sweep) would
+        otherwise oversubscribe the machine by workers * OpenMP's default
+        thread count without asking for it. Raise it explicitly for a
+        single, one-off solve (see ``set_num_threads()``'s docstring for
+        measured scaling -- more isn't always better past your physical
+        core count).
         """
         eps, k_medium = self._eps_and_k(wavelength_vacuum)
         coords = rotate_for_incidence(
@@ -183,6 +193,7 @@ class Cluster:
             restart=restart,
             max_iter=max_iter,
             truncation_formula=truncation_formula,
+            n_threads=n_threads,
         )
         flux_norm = medium_flux_norm(self.medium_refractive_index)
         result["c_ext"] *= flux_norm
@@ -202,10 +213,12 @@ class Cluster:
         tol=1e-4,
         restart=5,
         max_iter=50,
+        n_threads: int = 1,
     ):
         """Compute the cluster's T-matrix at ``wavelength_vacuum``. Same
         medium transform as ``solve()``; no flux-normalization correction
-        applies here (the T-matrix has no cross sections to correct)."""
+        applies here (the T-matrix has no cross sections to correct).
+        ``n_threads`` defaults to 1 -- see ``solve()``'s docstring."""
         eps, k_medium = self._eps_and_k(wavelength_vacuum)
         result = FaSTMM2().compute_tmatrix(
             self.coords,
@@ -218,6 +231,7 @@ class Cluster:
             tol=tol,
             restart=restart,
             max_iter=max_iter,
+            n_threads=n_threads,
         )
         result["k_medium"] = k_medium
         result["eps"] = eps

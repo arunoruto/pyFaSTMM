@@ -99,10 +99,12 @@ mie_patched = custom_target(
 # dependency on it, so the Python extension never needs HDF5 at all; only
 # main.f90 (replaced here by fastmm2_f2py.f90) used it upstream.
 #
-# Grows as more of fastmm2_f2py.f90 is written -- keep in sync with the
-# Makefile's F2PY_ONLY.
+# Grows as more of fastmm2_f2py.f90 is written -- the Makefile's f2py-ext
+# target delegates entirely to this meson.build (`meson setup`/`compile`
+# on the same build), so there's no second list to keep in sync with.
 f2py_only = [
   'fastmm2_solve_fixed', 'fastmm2_solve_averaged', 'fastmm2_compute_tmatrix',
+  'fastmm2_set_num_threads',
 ]
 
 f2py_sources = [

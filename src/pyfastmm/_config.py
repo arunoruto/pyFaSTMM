@@ -245,6 +245,13 @@ class SolverConfig(BaseModel):
     small-ka, high-refractive-index-contrast clusters (e.g. nanometer-scale
     metal monomers), where formula 0 under-resolves near-field coupling and
     under-converges Cext by double-digit percentages."""
+    n_threads: int = 1
+    """OpenMP thread count for the GMRES matvec/solver/far-field hot paths
+    (see Cluster.solve()'s docstring for measured scaling and why 1, not
+    "all cores", is the default -- this matters especially for a sweep
+    over many wavelengths/clusters run under its own process-level
+    parallelism, e.g. spcwth's campaign.py, where workers * n_threads can
+    oversubscribe the machine if this isn't kept conservative)."""
 
 
 class OutputConfig(BaseModel):
@@ -315,6 +322,7 @@ class SweepConfig(BaseModel):
                     tol=solver.tolerance,
                     restart=solver.restart,
                     max_iter=solver.max_iterations,
+                    n_threads=solver.n_threads,
                 )
             else:
                 result = cluster.solve(
@@ -329,6 +337,7 @@ class SweepConfig(BaseModel):
                     restart=solver.restart,
                     max_iter=solver.max_iterations,
                     truncation_formula=solver.truncation_formula,
+                    n_threads=solver.n_threads,
                 )
             result["wavelength_m"] = float(wl)
             result["k"] = result.pop("k_medium")

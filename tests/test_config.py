@@ -167,6 +167,37 @@ def test_solver_config_truncation_formula_default_and_override():
     assert SolverConfig(truncation_formula=1).truncation_formula == 1
 
 
+def test_solver_config_n_threads_default_and_override():
+    assert SolverConfig().n_threads == 1
+    assert SolverConfig(n_threads=8).n_threads == 8
+
+
+def test_sweep_config_run_passes_n_threads_through(monkeypatch):
+    """SolverConfig.n_threads must reach Cluster.solve(), not silently
+    fall back to Cluster's own default -- pin the actual value threaded
+    through, not just that a solve happens to succeed."""
+    import pyfastmm._config as config_mod
+
+    seen = {}
+    orig_solve = config_mod.Cluster.solve
+
+    def spy_solve(self, *args, **kwargs):
+        seen["n_threads"] = kwargs.get("n_threads")
+        return orig_solve(self, *args, **kwargs)
+
+    monkeypatch.setattr(config_mod.Cluster, "solve", spy_solve)
+
+    cfg = SweepConfig(
+        particles=ParticlesConfig(
+            positions_file="fractal_N128_Df2.0.dat", refractive_index=(1.5, 0.0)
+        ),
+        wavelengths=WavelengthsConfig(start=5.0, stop=6.0, num=1, scale=1.0),
+        solver=SolverConfig(n_threads=3),
+    )
+    cfg.run(base_dir=_DATA_DIR)
+    assert seen["n_threads"] == 3
+
+
 def test_particles_and_medium_share_get_nk_behavior():
     # Both configs inherit get_nk() from the same mixin -- a fixed tuple
     # broadcasts identically regardless of which config class it's on.
