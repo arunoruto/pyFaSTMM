@@ -41,11 +41,48 @@
     # meson.build resolves LAPACK/BLAS link flags via `pkg-config --libs`
     # (see meson.build's comment) instead of relying on NIX_LDFLAGS.
     pkgs.pkg-config
+    # For building portable manylinux wheels locally via `uvx cibuildwheel`
+    # (see .github/workflows/wheels.yml / pyproject.toml's
+    # [tool.cibuildwheel]) -- a wheel built directly in this Nix shell
+    # links against this system's glibc/dynamic-linker paths
+    # (/nix/store/...), which aren't portable off this machine; the
+    # manylinux container is what makes cibuildwheel's output portable.
+    # Podman over Docker: daemonless, no persistent system service needed
+    # for a project-scoped `packages` addition like this one. Note: fully
+    # rootless container networking/user namespaces on NixOS sometimes
+    # still wants one small *system-level* option
+    # (`virtualisation.podman.enable = true`, for subuid/subgid ranges)
+    # that a project devenv can't self-contain -- if `podman run` fails
+    # with a user-namespace error, that's the fix; most modern NixOS
+    # systems already have it.
+    pkgs.podman
   ];
+
+  # Podman on NixOS needs a registries.conf (where to resolve short image
+  # names like "docker.io/library/hello-world" from) and a policy.json
+  # (image signature verification policy) -- normally provided system-wide
+  # by `virtualisation.podman.enable`, which a project devenv can't set.
+  #
+  # registries.conf has a real env var override (below): search docker.io
+  # by default. policy.json does not -- containers/image hardcodes
+  # $HOME/.config/containers/policy.json (or /etc/containers/policy.json)
+  # with no override, so enterShell writes one there instead, only if
+  # absent (never clobbers an existing user config). "insecureAccept
+  # Anything" (accept all images, no signature verification) is fine for
+  # a local build tool pulling public manylinux images -- not meant as a
+  # security policy for anything sensitive.
+  env.CONTAINERS_REGISTRIES_CONF = pkgs.writeText "registries.conf" ''
+    unqualified-search-registries = ["docker.io"]
+  '';
 
   enterShell = ''
     if [ ! -L "$DEVENV_ROOT/.venv" ]; then
         ln -s "$DEVENV_STATE/venv/" "$DEVENV_ROOT/.venv"
+    fi
+    if [ ! -f "$HOME/.config/containers/policy.json" ]; then
+        mkdir -p "$HOME/.config/containers"
+        echo '{ "default": [{ "type": "insecureAcceptAnything" }] }' \
+            > "$HOME/.config/containers/policy.json"
     fi
   '';
 
