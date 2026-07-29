@@ -54,6 +54,41 @@ def test_two_sphere_solve_no_nan():
     assert result["c_ext"] > 0
 
 
+def test_complex_k_absorbing_medium_no_nan():
+    """Regression test for a real bug: mueller_matrix()/
+    compute_cluster_fields_far() picked the far-field evaluation radius as
+    RR = 1.0d6 * real(k) (external/fastmm2/src/mie.f90, dimensionally wrong
+    -- RR is a distance in meters, real(k) has units of 1/length -- and
+    numerically catastrophic: for optical k ~1e7 rad/m this put RR ~1e13 m,
+    at which exp(i*k*RR) underflows to exact complex zero for *any*
+    absorbing medium, i.e. any complex k with nonzero imaginary part --
+    corrupting the entire Mueller/Jones matrix (division by exact zero)
+    while cross sections stayed finite (they don't evaluate the field at
+    RR). Fixed via src/pyfastmm/_fortran/patches/mie-far-field-distance-fix.patch
+    (RR = 1.0d6 / real(k)). This is not an edge case for pyfastmm's own
+    v1.1 medium support -- any nonzero medium.refractive_index absorption
+    (k channel) triggers it, so a strongly absorbing composite (metal
+    nanoparticle in a host medium, giving a negative-real-part effective
+    permittivity) is exactly the regime that first surfaced this."""
+    f = FaSTMM2()
+    n_medium = 1.85 + 0.0011j  # a weakly-absorbing dielectric host
+    eps = ((2.08 + 3.113j) / n_medium) ** 2  # metal-in-dielectric composite
+    k = 2 * np.pi * n_medium / 0.52e-6
+
+    result = f.solve(
+        coords=[[0.0, 0.0, 0.0]], radii=[5e-9], eps=[eps], k=complex(k),
+        N_theta=37, N_phi=4, formulation=0, acc=2, tol=1e-4,
+    )
+    mueller = result["mueller"]
+    assert not np.any(np.isnan(mueller))
+    assert np.all(mueller[:, 2] >= 0)  # P11 (phase function) positivity
+    assert result["c_ext"] > 0
+    assert result["c_abs"] > 0
+    assert result["c_ext"] == pytest.approx(
+        result["c_ext_minus_c_abs"] + result["c_abs"]
+    )
+
+
 def test_orientation_average_matches_fixed_for_single_sphere():
     """A single sphere is rotationally symmetric, so its orientation-averaged
     cross sections must equal the fixed-orientation ones (independent of the

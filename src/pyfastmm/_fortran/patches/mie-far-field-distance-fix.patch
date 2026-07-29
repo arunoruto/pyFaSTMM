@@ -1,0 +1,29 @@
+--- a/external/fastmm2/src/mie.f90
++++ b/external/fastmm2/src/mie.f90
+@@ -1030,7 +1030,13 @@
+ complex(dp) :: i
+ 
+ i = dcmplx(0.0,1.0)
+-RR = 1.0d6 * real(k)
++RR = 1.0d6 / real(k)
++! Cap RR so abs(aimag(k))*RR stays well below double precision's
++! exp() overflow/underflow threshold (~709) even for a strongly
++! absorbing medium -- see patch file for the full explanation.
++if (abs(aimag(k)) * RR > 300.0d0 .and. abs(aimag(k)) > 0.0d0) then
++   RR = 300.0d0 / abs(aimag(k))
++end if
+ allocate(S_out(N_phi*N_theta,18))
+ allocate(J_out(N_phi*N_theta,6))
+ !call inc_xy(Nmax, sphere, b_vec, b_vec2, k)
+@@ -1311,7 +1317,10 @@
+ 
+ E_out(:,:) = dcmplx(0.0,0.0)
+ 
+-RR = 1.0d6*real(k)
++RR = 1.0d6/real(k)
++if (abs(aimag(k)) * RR > 300.0d0 .and. abs(aimag(k)) > 0.0d0) then
++   RR = 300.0d0 / abs(aimag(k))
++end if
+ kr = k * RR
+ 
+ Cext = 0.0

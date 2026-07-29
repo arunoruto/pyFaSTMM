@@ -52,6 +52,34 @@ gaussquad_patched = custom_target(
   command: [py, files('tools' / 'apply_patch.py'), '@INPUT0@', '@INPUT1@', '@OUTPUT@'],
 )
 
+# --- Patched copy fixing a far-field-distance bug in mie.f90 ---
+#
+# mueller_matrix()/compute_cluster_fields_far() pick the far-field
+# evaluation radius as `RR = 1.0d6 * real(k)` -- dimensionally wrong (RR
+# is later used as a distance in meters; real(k) has units of 1/length,
+# so multiplying gives units of 1/length, not length) and, numerically,
+# catastrophic: real(k) for optical wavelengths is ~1e7 rad/m, so RR ends
+# up ~1e13 m (tens of AU). At that distance `exp(i*k*RR)` underflows to
+# exact complex zero for *any* absorbing medium (any nonzero Im(k), i.e.
+# any medium.refractive_index with nonzero k) -- which is exactly this
+# project's regime (an olivine/silicate host). The resulting division by
+# an exact zero produces an all-NaN Mueller/Jones matrix (S_out columns
+# 3-18) while cross sections stay finite, since cross_sections()/
+# sphere_absorbtion2() use the T-matrix coefficients directly and never
+# evaluate the field at RR. Fixed to `RR = 1.0d6 / real(k)` (~1e5-1e6
+# wavelengths away -- comfortably far-field, without the field having
+# already decayed to numerical zero at that distance for realistic
+# absorption).
+mie_patched = custom_target(
+  'mie-patched',
+  input: [
+    fastmm2_dir / 'mie.f90',
+    patches_dir / 'mie-far-field-distance-fix.patch',
+  ],
+  output: 'mie.f90',
+  command: [py, files('tools' / 'apply_patch.py'), '@INPUT0@', '@INPUT1@', '@OUTPUT@'],
+)
+
 # --- The f2py extension itself ---
 #
 # Built via numpy.f2py's own "-c" compile mode (the same command
@@ -85,7 +113,7 @@ f2py_sources = [
   fastmm2_dir / 'possu.f90',
   fastmm2_dir / 'sfunctions.f90',
   fastmm2_dir / 'translations.f90',
-  fastmm2_dir / 'mie.f90',
+  mie_patched,
   fastmm2_dir / 'geometry.f90',
   fastmm2_dir / 'octtree_adaptive.f90',
   fastmm2_dir / 'interpolation.f90',
