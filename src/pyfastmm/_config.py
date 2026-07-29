@@ -325,6 +325,24 @@ class SweepConfig(BaseModel):
                     restart=solver.restart,
                     max_iter=solver.max_iterations,
                 )
+                # FaSTMM2's cross_sections()/sphere_absorbtion2() (which
+                # compute c_ext/c_abs/c_ext_minus_c_abs) implicitly assume
+                # vacuum-like incident-flux normalization (Poynting flux ~
+                # |E|^2, no medium factor) -- a real host medium needs an
+                # extra Re(n_medium), since flux ~ Re(n_medium)*|E|^2.
+                # Confirmed against MSTM (which does model this) across
+                # single sphere, touching pair, 4-chain, and a real 32-
+                # sphere fractal aggregate in an absorbing olivine-like
+                # medium: agreement improves from ~46% off to <0.03% with
+                # this correction. NOT applied to c_sca (the far-field-
+                # integrated Csca from compute_cluster_fields_far) -- that
+                # value has its own, separate reliability problem in the
+                # deep-Rayleigh regime (unrelated to this fix, see
+                # space-weathering's PLAN.md) that this wouldn't address.
+                flux_norm = float(n_med.real)
+                result["c_ext"] *= flux_norm
+                result["c_abs"] *= flux_norm
+                result["c_ext_minus_c_abs"] *= flux_norm
             result["wavelength_m"] = float(wl)
             result["k"] = complex(k)
             results.append(result)

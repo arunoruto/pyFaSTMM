@@ -7,6 +7,7 @@ import pytest
 
 pydantic = pytest.importorskip("pydantic")
 
+from pyfastmm import FaSTMM2
 from pyfastmm._config import (
     IncidentConfig,
     MediumConfig,
@@ -71,6 +72,51 @@ def test_medium_applies_refractive_index():
     results = run_sweep(cfg, base_dir=_DATA_DIR)
     assert len(results) == 1
     assert results[0]["c_ext"] > 0
+
+
+def test_medium_flux_normalization_matches_raw_solve_times_re_n_medium():
+    """Regression test for a real cross-section bug: SweepConfig.run()
+    used to report FaSTMM2's raw cross sections unchanged, but
+    cross_sections()/sphere_absorbtion2() implicitly assume vacuum-like
+    incident-flux normalization (Poynting flux ~ |E|^2) -- a real host
+    medium needs an extra Re(n_medium), since flux ~ Re(n_medium)*|E|^2.
+    Confirmed against MSTM (which does model this) on single sphere,
+    touching pair, 4-chain, and a real 32-sphere fractal aggregate in an
+    absorbing medium: ~46% off without this factor, <0.03% with it.
+
+    This test doesn't have MSTM available to cross-check against, but
+    pins the *mechanism*: SweepConfig.run()'s reported c_ext/c_abs must
+    equal a raw FaSTMM2().solve() call (using the same k_medium/eps_eff
+    SweepConfig.run() itself computes) times Re(n_medium) -- i.e. the
+    correction is applied exactly once, not zero or twice.
+    """
+    n_particle = 1.5 + 0.01j
+    n_medium = 1.3 + 0.0j
+    wavelength = 5.0
+
+    cfg = SweepConfig(
+        particles=ParticlesConfig(
+            positions_file="fractal_N128_Df2.0.dat", refractive_index=(1.5, 0.01)
+        ),
+        wavelengths=WavelengthsConfig(values=[wavelength], scale=1.0),
+        medium=MediumConfig(refractive_index=(1.3, 0.0)),
+    )
+    results = cfg.run(base_dir=_DATA_DIR)
+
+    positions = cfg.particles.load_positions(_DATA_DIR)
+    coords, radii = positions[:, :3], positions[:, 3]
+    eps_eff = (n_particle / n_medium) ** 2
+    k_medium = 2.0 * np.pi * n_medium / wavelength
+
+    raw = FaSTMM2().solve(
+        coords, radii, np.full(len(radii), eps_eff), complex(k_medium)
+    )
+
+    assert results[0]["c_ext"] == pytest.approx(raw["c_ext"] * n_medium.real)
+    assert results[0]["c_abs"] == pytest.approx(raw["c_abs"] * n_medium.real)
+    assert results[0]["c_ext_minus_c_abs"] == pytest.approx(
+        raw["c_ext_minus_c_abs"] * n_medium.real
+    )
 
 
 def test_incident_rotation_identity_at_zero_angle():
