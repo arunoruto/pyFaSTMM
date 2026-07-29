@@ -142,6 +142,7 @@ python_sources = [
   'src' / 'pyfastmm' / '__init__.py',
   'src' / 'pyfastmm' / '_build.py',
   'src' / 'pyfastmm' / '_fastmm.py',
+  'src' / 'pyfastmm' / '_cluster.py',
   'src' / 'pyfastmm' / '_config.py',
 ]
 
