@@ -12,6 +12,7 @@ from pyfastmm._config import (
     IncidentConfig,
     MediumConfig,
     ParticlesConfig,
+    ResolvedSweepInputs,
     SolverConfig,
     SweepConfig,
     WavelengthsConfig,
@@ -264,3 +265,69 @@ def test_run_sweep_small_cluster_two_wavelengths():
     for r in results:
         assert r["c_ext"] > 0
         assert not np.any(np.isnan(r["mueller"]))
+
+
+def test_run_matches_resolve_then_run_resolved():
+    """run() is now just run_resolved(resolve_inputs()) -- pin that the
+    split didn't change behavior. This is the seam a distributed worker
+    (e.g. a Dask task) is meant to use: resolve_inputs() on a machine with
+    file access, run_resolved() anywhere, no filesystem needed there."""
+    cfg = SweepConfig(
+        particles=ParticlesConfig(refractive_index=(1.5, 0.01)),
+        wavelengths=WavelengthsConfig(values=[5.0, 6.0], scale=1.0),
+        solver=dict(N_theta=11, N_phi=1, acc=1),
+    )
+    import pyfastmm._config as config_mod
+
+    orig_load = config_mod.ParticlesConfig.load_positions
+    config_mod.ParticlesConfig.load_positions = lambda *_a, **_kw: np.array(
+        [[-1.5, 0.0, 0.0, 1.0], [1.5, 0.0, 0.0, 1.0]]
+    )
+    try:
+        via_run = cfg.run()
+        resolved = cfg.resolve_inputs()
+        via_split = cfg.run_resolved(resolved)
+    finally:
+        config_mod.ParticlesConfig.load_positions = orig_load
+
+    assert isinstance(resolved, ResolvedSweepInputs)
+    assert len(via_run) == len(via_split) == 2
+    for a, b in zip(via_run, via_split):
+        assert a["c_ext"] == pytest.approx(b["c_ext"])
+        assert a["wavelength_m"] == pytest.approx(b["wavelength_m"])
+        np.testing.assert_allclose(a["mueller"], b["mueller"])
+
+
+def test_resolved_sweep_inputs_pickles_roundtrip():
+    """ResolvedSweepInputs must survive being pickled and reconstructed --
+    the actual mechanism a Dask (or ProcessPoolExecutor) worker uses to
+    receive it, since it's the thing shipped across that boundary instead
+    of a file path."""
+    import pickle
+
+    cfg = SweepConfig(
+        particles=ParticlesConfig(refractive_index=(1.5, 0.01)),
+        wavelengths=WavelengthsConfig(values=[5.0, 6.0], scale=1.0),
+        solver=dict(N_theta=11, N_phi=1, acc=1),
+    )
+    import pyfastmm._config as config_mod
+
+    orig_load = config_mod.ParticlesConfig.load_positions
+    config_mod.ParticlesConfig.load_positions = lambda *_a, **_kw: np.array(
+        [[-1.5, 0.0, 0.0, 1.0], [1.5, 0.0, 0.0, 1.0]]
+    )
+    try:
+        resolved = cfg.resolve_inputs()
+    finally:
+        config_mod.ParticlesConfig.load_positions = orig_load
+
+    roundtripped = pickle.loads(pickle.dumps(resolved))
+    np.testing.assert_array_equal(roundtripped.coords, resolved.coords)
+    np.testing.assert_array_equal(roundtripped.radii, resolved.radii)
+    np.testing.assert_array_equal(roundtripped.nk_particle, resolved.nk_particle)
+    assert roundtripped.solver == resolved.solver
+
+    # And the roundtripped object must actually be usable, not just equal.
+    results = cfg.run_resolved(roundtripped)
+    assert len(results) == 2
+    assert results[0]["c_ext"] > 0

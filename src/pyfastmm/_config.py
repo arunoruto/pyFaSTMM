@@ -54,6 +54,7 @@ from __future__ import annotations
 
 import os
 import tomllib
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -263,6 +264,29 @@ class OutputConfig(BaseModel):
     t_order: int = 16
 
 
+@dataclass
+class ResolvedSweepInputs:
+    """Everything :meth:`SweepConfig.run_resolved` needs, with all file I/O
+    already done -- plain arrays and pydantic sub-configs, no filesystem
+    dependency. This is the seam a distributed worker (e.g. a Dask task)
+    should see: :meth:`SweepConfig.resolve_inputs` does all the file
+    reading on whichever machine has access to ``base_dir`` (particle
+    positions, incidence rotation, per-wavelength particle/medium n,k
+    interpolation), producing this -- cheap to pickle (a couple of small
+    arrays plus two small pydantic models) -- which
+    :meth:`SweepConfig.run_resolved` then runs against, touching no files
+    at all. ``SweepConfig.run()`` is just ``run_resolved(resolve_inputs())``.
+    """
+
+    coords: np.ndarray
+    radii: np.ndarray
+    wavelengths_m: np.ndarray
+    nk_particle: np.ndarray
+    nk_medium: np.ndarray
+    solver: SolverConfig
+    output: OutputConfig
+
+
 class SweepConfig(BaseModel):
     """Complete sweep configuration."""
 
@@ -273,24 +297,14 @@ class SweepConfig(BaseModel):
     solver: SolverConfig = Field(default_factory=SolverConfig)
     output: OutputConfig = Field(default_factory=OutputConfig)
 
-    def run(
-        self,
-        base_dir: str | os.PathLike[str] = "",
-        progress_callback: Any = None,
-    ) -> list[dict]:
-        """Run FaSTMM2.solve() once per wavelength in the sweep.
-
-        Parameters
-        ----------
-        base_dir : path used to resolve a relative particles.positions_file
-        progress_callback : optional callable(fraction_done: float, wavelength_m: float)
-            called after each wavelength, e.g. to drive a progress bar.
-
-        Returns
-        -------
-        list of dicts, one per wavelength, each the same dict solve() (or
-        compute_tmatrix(), if output.compute_tmatrix is set) returns, plus
-        "wavelength_m" and "k" keys.
+    def resolve_inputs(
+        self, base_dir: str | os.PathLike[str] = ""
+    ) -> ResolvedSweepInputs:
+        """Load particle positions (gap-factor/scale-applied, incidence-
+        rotated) and per-wavelength particle/medium refractive indices --
+        every file read ``run()`` does before its solve loop -- into a
+        :class:`ResolvedSweepInputs`. See that class's docstring for why
+        this is split out from :meth:`run_resolved`.
         """
         positions = self.particles.load_positions(base_dir)
         positions = self.incident.rotate_positions(positions)
@@ -303,22 +317,48 @@ class SweepConfig(BaseModel):
         nk_particle = self.particles.get_nk(wavelengths_raw, base_dir)
         nk_medium = self.medium.get_nk(wavelengths_raw, base_dir)
 
-        solver = self.solver
+        return ResolvedSweepInputs(
+            coords=coords,
+            radii=radii,
+            wavelengths_m=wavelengths_m,
+            nk_particle=nk_particle,
+            nk_medium=nk_medium,
+            solver=self.solver,
+            output=self.output,
+        )
+
+    def run_resolved(
+        self,
+        resolved: ResolvedSweepInputs,
+        progress_callback: Any = None,
+    ) -> list[dict]:
+        """Run FaSTMM2.solve() once per wavelength against already-resolved
+        inputs (see :meth:`resolve_inputs`) -- no file I/O, safe to call on
+        a machine with no access to whatever ``base_dir`` originally meant.
+
+        Returns
+        -------
+        list of dicts, one per wavelength, each the same dict solve() (or
+        compute_tmatrix(), if output.compute_tmatrix is set) returns, plus
+        "wavelength_m" and "k" keys.
+        """
+        solver = resolved.solver
         # Only matters for the compute_tmatrix branch below -- FaSTMM.solve()
         # passes truncation_formula explicitly on every call instead.
         FaSTMM2().set_truncation_formula(solver.truncation_formula)
         results = []
-        for i, wl in enumerate(wavelengths_m):
+        n = len(resolved.wavelengths_m)
+        for i, wl in enumerate(resolved.wavelengths_m):
             fastmm = FaSTMM(
-                coords,
-                radii,
-                refractive_index=nk_particle[i],
-                medium_refractive_index=nk_medium[i],
+                resolved.coords,
+                resolved.radii,
+                refractive_index=resolved.nk_particle[i],
+                medium_refractive_index=resolved.nk_medium[i],
             )
-            if self.output.compute_tmatrix:
+            if resolved.output.compute_tmatrix:
                 result = fastmm.compute_tmatrix(
                     wl,
-                    t_order=self.output.t_order,
+                    t_order=resolved.output.t_order,
                     formulation=solver.formulation,
                     acc=solver.acc,
                     tol=solver.tolerance,
@@ -345,9 +385,36 @@ class SweepConfig(BaseModel):
             result["k"] = result.pop("k_medium")
             results.append(result)
             if progress_callback is not None:
-                progress_callback((i + 1) / len(wavelengths_m), float(wl))
+                progress_callback((i + 1) / n, float(wl))
 
         return results
+
+    def run(
+        self,
+        base_dir: str | os.PathLike[str] = "",
+        progress_callback: Any = None,
+    ) -> list[dict]:
+        """Run FaSTMM2.solve() once per wavelength in the sweep.
+
+        Parameters
+        ----------
+        base_dir : path used to resolve a relative particles.positions_file
+        progress_callback : optional callable(fraction_done: float, wavelength_m: float)
+            called after each wavelength, e.g. to drive a progress bar.
+
+        Returns
+        -------
+        list of dicts, one per wavelength, each the same dict solve() (or
+        compute_tmatrix(), if output.compute_tmatrix is set) returns, plus
+        "wavelength_m" and "k" keys.
+
+        Thin wrapper around :meth:`resolve_inputs` + :meth:`run_resolved` --
+        split into two steps so a distributed worker (e.g. a Dask task)
+        never needs filesystem access; it can be handed an already-resolved
+        :class:`ResolvedSweepInputs` and call :meth:`run_resolved` directly
+        instead.
+        """
+        return self.run_resolved(self.resolve_inputs(base_dir), progress_callback)
 
 
 # ---------------------------------------------------------------------------
