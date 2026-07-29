@@ -297,6 +297,15 @@ def test_run_matches_resolve_then_run_resolved():
         assert a["wavelength_m"] == pytest.approx(b["wavelength_m"])
         np.testing.assert_allclose(a["mueller"], b["mueller"])
 
+    # The actual point of making run_resolved a staticmethod: callable via
+    # the class with no SweepConfig instance at all -- what a Dask worker
+    # does, since it only ever receives `resolved`, never a SweepConfig
+    # (which would still carry particles.positions_file, a local file path
+    # not meaningful on a remote machine).
+    via_classmethod_call = SweepConfig.run_resolved(resolved)
+    assert len(via_classmethod_call) == 2
+    assert via_classmethod_call[0]["c_ext"] == pytest.approx(via_run[0]["c_ext"])
+
 
 def test_resolved_sweep_inputs_pickles_roundtrip():
     """ResolvedSweepInputs must survive being pickled and reconstructed --

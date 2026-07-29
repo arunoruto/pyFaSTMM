@@ -327,14 +327,19 @@ class SweepConfig(BaseModel):
             output=self.output,
         )
 
+    @staticmethod
     def run_resolved(
-        self,
         resolved: ResolvedSweepInputs,
         progress_callback: Any = None,
     ) -> list[dict]:
         """Run FaSTMM2.solve() once per wavelength against already-resolved
         inputs (see :meth:`resolve_inputs`) -- no file I/O, safe to call on
         a machine with no access to whatever ``base_dir`` originally meant.
+        A ``staticmethod`` deliberately -- it needs nothing from ``self``,
+        only ``resolved``, so it's callable as
+        ``SweepConfig.run_resolved(resolved)`` with no ``SweepConfig``
+        instance at all (e.g. on a Dask worker that never had one, only
+        the already-resolved arrays shipped to it).
 
         Returns
         -------
