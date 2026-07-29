@@ -60,12 +60,8 @@ from typing import Any
 import numpy as np
 from pydantic import BaseModel, Field, model_validator
 
-from pyfastmm._fastmm import (
-    FaSTMM2,
-    eps_relative_to_medium,
-    k_in_medium,
-    medium_flux_norm,
-)
+from pyfastmm._cluster import Cluster
+from pyfastmm._fastmm import FaSTMM2
 
 # ---------------------------------------------------------------------------
 # Pydantic models
@@ -291,7 +287,6 @@ class SweepConfig(BaseModel):
         positions = self.incident.rotate_positions(positions)
         coords = positions[:, :3]
         radii = positions[:, 3]
-        n_spheres = len(radii)
 
         wavelengths_m = self.wavelengths.get_wavelengths_m()
         wavelengths_raw = wavelengths_m / self.wavelengths.scale
@@ -299,21 +294,21 @@ class SweepConfig(BaseModel):
         nk_particle = self.particles.get_nk(wavelengths_raw, base_dir)
         nk_medium = self.medium.get_nk(wavelengths_raw, base_dir)
 
-        f = FaSTMM2()
         solver = self.solver
-        f.set_truncation_formula(solver.truncation_formula)
+        # Only matters for the compute_tmatrix branch below -- Cluster.solve()
+        # passes truncation_formula explicitly on every call instead.
+        FaSTMM2().set_truncation_formula(solver.truncation_formula)
         results = []
         for i, wl in enumerate(wavelengths_m):
-            n_part = nk_particle[i]
-            n_med = nk_medium[i]
-            eps = np.full(n_spheres, eps_relative_to_medium(n_part, n_med))
-            k = k_in_medium(2.0 * np.pi / wl, n_med)
+            cluster = Cluster(
+                coords,
+                radii,
+                refractive_index=nk_particle[i],
+                medium_refractive_index=nk_medium[i],
+            )
             if self.output.compute_tmatrix:
-                result = f.compute_tmatrix(
-                    coords,
-                    radii,
-                    eps,
-                    complex(k),
+                result = cluster.compute_tmatrix(
+                    wl,
                     t_order=self.output.t_order,
                     formulation=solver.formulation,
                     acc=solver.acc,
@@ -322,11 +317,8 @@ class SweepConfig(BaseModel):
                     max_iter=solver.max_iterations,
                 )
             else:
-                result = f.solve(
-                    coords,
-                    radii,
-                    eps,
-                    complex(k),
+                result = cluster.solve(
+                    wl,
                     N_theta=solver.N_theta,
                     N_phi=solver.N_phi,
                     N_ave=solver.N_ave,
@@ -336,15 +328,10 @@ class SweepConfig(BaseModel):
                     tol=solver.tolerance,
                     restart=solver.restart,
                     max_iter=solver.max_iterations,
+                    truncation_formula=solver.truncation_formula,
                 )
-                # See medium_flux_norm()'s docstring: FaSTMM2's raw cross
-                # sections need this correction for a non-vacuum medium.
-                flux_norm = medium_flux_norm(n_med)
-                result["c_ext"] *= flux_norm
-                result["c_abs"] *= flux_norm
-                result["c_ext_minus_c_abs"] *= flux_norm
             result["wavelength_m"] = float(wl)
-            result["k"] = complex(k)
+            result["k"] = result.pop("k_medium")
             results.append(result)
             if progress_callback is not None:
                 progress_callback((i + 1) / len(wavelengths_m), float(wl))
