@@ -138,6 +138,30 @@ def test_incident_rotation_preserves_geometry():
     assert d0 == pytest.approx(d1)
 
 
+def test_incident_rotation_matches_validated_order_for_combined_angles():
+    """Regression test for a real bug: with both polar and azimuthal
+    nonzero simultaneously, rotation order matters (R = Ry @ Rz, Rz
+    applied first) -- this function used to compose them the other way
+    (R = Rz @ Ry), which t-bench's cross-tool validation against MSTM
+    found disagrees by up to ~1.3% (matches to <0.0002% with the order
+    pinned here). A single nonzero angle can't distinguish the two orders
+    (trivial composition), so this needs both simultaneously nonzero."""
+    theta = np.radians(30.0)
+    phi = np.radians(45.0)
+    cos_t, sin_t = np.cos(-theta), np.sin(-theta)
+    Ry = np.array([[cos_t, 0, sin_t], [0, 1, 0], [-sin_t, 0, cos_t]])
+    cos_p, sin_p = np.cos(-phi), np.sin(-phi)
+    Rz = np.array([[cos_p, -sin_p, 0], [sin_p, cos_p, 0], [0, 0, 1]])
+    expected_R = Ry @ Rz  # the validated order -- NOT Rz @ Ry
+
+    inc = IncidentConfig(polar_angle_deg=30.0, azimuthal_angle_deg=45.0)
+    positions = np.array([[1.0, 0.5, -0.3, 1.0]])
+    rotated = inc.rotate_positions(positions)
+    expected = positions.copy()
+    expected[:, :3] = positions[:, :3] @ expected_R.T
+    np.testing.assert_allclose(rotated, expected, atol=1e-12)
+
+
 def test_solver_config_truncation_formula_default_and_override():
     assert SolverConfig().truncation_formula == 0
     assert SolverConfig(truncation_formula=1).truncation_formula == 1

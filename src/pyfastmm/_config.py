@@ -208,14 +208,22 @@ class IncidentConfig(BaseModel):
         theta = np.radians(self.polar_angle_deg)
         phi = np.radians(self.azimuthal_angle_deg)
 
-        # Rotate the cluster by -theta about the (rotated) y-axis and then
-        # -phi about z, the inverse of tilting the beam by (theta, phi) --
-        # equivalent because only the relative orientation matters.
+        # Rotate the cluster by -phi about z first, then -theta about the
+        # (rotated) y-axis (R = Ry @ Rz, Rz innermost/applied first) -- the
+        # inverse of tilting the beam by (theta, phi) via
+        # k_hat = Rz(alpha).Ry(beta).z_hat, MSTM's own incident-wave
+        # convention (mstm-input-37.f90; theta=beta=polar, phi=alpha=
+        # azimuthal). Order matters here: for a single nonzero angle any
+        # order agrees (trivial composition), but with both angles nonzero
+        # simultaneously the *other* order (R = Rz @ Ry) was empirically
+        # found to disagree with MSTM by up to ~1.3% (t-bench's cross-tool
+        # validation -- this function used to have that bug) while this one
+        # matches to <0.0002%.
         cos_t, sin_t = np.cos(-theta), np.sin(-theta)
         Ry = np.array([[cos_t, 0, sin_t], [0, 1, 0], [-sin_t, 0, cos_t]])
         cos_p, sin_p = np.cos(-phi), np.sin(-phi)
         Rz = np.array([[cos_p, -sin_p, 0], [sin_p, cos_p, 0], [0, 0, 1]])
-        R = Rz @ Ry
+        R = Ry @ Rz
 
         out = positions.copy()
         out[:, :3] = positions[:, :3] @ R.T
