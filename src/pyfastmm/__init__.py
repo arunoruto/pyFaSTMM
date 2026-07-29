@@ -8,6 +8,7 @@ from pyfastmm._fastmm import (
     get_tmatrix_size,
     k_in_medium,
     medium_flux_norm,
+    resolve_n_threads,
 )
 
 __all__ = [
@@ -19,6 +20,7 @@ __all__ = [
     "k_in_medium",
     "medium_flux_norm",
     "radiative_transfer_phase_function",
+    "resolve_n_threads",
     "rotate_for_incidence",
 ]
 __version__ = "1.0.0"

@@ -36,6 +36,8 @@ Usage:
 
 from __future__ import annotations
 
+import os
+
 import numpy as np
 
 try:
@@ -45,6 +47,29 @@ except ImportError as exc:  # pragma: no cover
         "pyfastmm's compiled extension is not built. Run `make f2py-ext` "
         "or `uv sync` to build it."
     ) from exc
+
+
+def resolve_n_threads(n_threads: int) -> int:
+    """Resolve a thread count, supporting negative values as an offset from
+    ``os.cpu_count()`` -- e.g. ``n_threads=-2`` means "leave 2 CPUs free",
+    resolving to ``cpu_count - 2``. Positive values pass through unchanged.
+    Clamped to at least 1 (a too-negative offset doesn't resolve to zero or
+    negative threads). ``0`` is rejected: it isn't a meaningful thread count
+    under either the positive ("exactly N threads") or negative ("N fewer
+    than all") reading.
+
+    New in v1.3.
+    """
+    if n_threads > 0:
+        return n_threads
+    if n_threads == 0:
+        raise ValueError(
+            "n_threads must not be 0 -- use a positive thread count, or a "
+            "negative offset from os.cpu_count() (e.g. -1 to leave one "
+            "CPU free)"
+        )
+    cpu_count = os.cpu_count() or 1
+    return max(1, cpu_count + n_threads)
 
 
 def get_tmatrix_size(t_order):
@@ -181,6 +206,9 @@ class FaSTMM2:
         omp_set_num_threads() runtime function directly, so it takes
         effect on the very next solve()/compute_tmatrix() call.
 
+        ``n`` may be negative -- see ``resolve_n_threads()`` -- to mean an
+        offset from ``os.cpu_count()`` rather than an absolute count.
+
         Measured on a real 128-sphere touching iron-in-olivine aggregate
         (16 logical cores): near-linear speedup through 8 threads (4.7x
         over 1 thread), but *worse* at 16 than at 8 (oversubscription) --
@@ -197,7 +225,7 @@ class FaSTMM2:
 
         New in v1.2.
         """
-        self._ext.fastmm2_f2py_bindings.fastmm2_set_num_threads(n)
+        self._ext.fastmm2_f2py_bindings.fastmm2_set_num_threads(resolve_n_threads(n))
 
     def solve(
         self,

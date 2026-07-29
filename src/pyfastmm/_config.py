@@ -251,7 +251,9 @@ class SolverConfig(BaseModel):
     "all cores", is the default -- this matters especially for a sweep
     over many wavelengths/clusters run under its own process-level
     parallelism, e.g. spcwth's campaign.py, where workers * n_threads can
-    oversubscribe the machine if this isn't kept conservative)."""
+    oversubscribe the machine if this isn't kept conservative). May be
+    negative, meaning an offset from os.cpu_count() -- see
+    resolve_n_threads()."""
 
 
 class OutputConfig(BaseModel):

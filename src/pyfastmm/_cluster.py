@@ -205,7 +205,9 @@ class FaSTMM:
         thread count without asking for it. Raise it explicitly for a
         single, one-off solve (see ``set_num_threads()``'s docstring for
         measured scaling -- more isn't always better past your physical
-        core count).
+        core count). May also be negative, meaning an offset from
+        ``os.cpu_count()`` (e.g. ``-2`` to leave 2 CPUs free) -- see
+        ``resolve_n_threads()``.
 
         Raises
         ------

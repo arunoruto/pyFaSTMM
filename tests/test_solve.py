@@ -1,13 +1,36 @@
 """Basic physical-sanity tests for FaSTMM2.solve(), no CLI binary required."""
 
+import os
+
 import numpy as np
 import pytest
 
-from pyfastmm import FaSTMM2, eps_from_index
+from pyfastmm import FaSTMM2, eps_from_index, resolve_n_threads
 
 
 def test_eps_from_index_squares_refractive_index():
     assert eps_from_index(1.5 + 0.01j) == pytest.approx((1.5 + 0.01j) ** 2)
+
+
+def test_resolve_n_threads_positive_passes_through():
+    assert resolve_n_threads(1) == 1
+    assert resolve_n_threads(5) == 5
+
+
+def test_resolve_n_threads_negative_is_offset_from_cpu_count():
+    cpu_count = os.cpu_count() or 1
+    assert resolve_n_threads(-1) == cpu_count - 1
+    assert resolve_n_threads(-2) == cpu_count - 2
+
+
+def test_resolve_n_threads_negative_offset_clamps_to_at_least_one():
+    cpu_count = os.cpu_count() or 1
+    assert resolve_n_threads(-(cpu_count + 10)) == 1
+
+
+def test_resolve_n_threads_zero_raises():
+    with pytest.raises(ValueError):
+        resolve_n_threads(0)
     np.testing.assert_allclose(
         eps_from_index([1.5 + 0.01j, 2.0 + 0.0j]),
         [(1.5 + 0.01j) ** 2, (2.0 + 0.0j) ** 2],
@@ -103,7 +126,7 @@ def test_set_num_threads_does_not_change_results():
         N_phi=1,
         tol=1e-6,
     )
-    results = [f.solve(**kwargs, n_threads=n) for n in (1, 2, 4)]
+    results = [f.solve(**kwargs, n_threads=n) for n in (1, 2, 4, -1)]
     for r in results[1:]:
         assert r["c_ext"] == pytest.approx(results[0]["c_ext"], rel=1e-10)
         assert r["c_abs"] == pytest.approx(results[0]["c_abs"], rel=1e-10)
@@ -114,6 +137,26 @@ def test_set_num_threads_does_not_change_results():
         np.testing.assert_allclose(
             r["mueller"], results[0]["mueller"], rtol=1e-8, atol=1e-10
         )
+
+
+def test_set_num_threads_calls_resolve_n_threads(monkeypatch):
+    """set_num_threads() is the single choke point every n_threads-taking
+    call (FaSTMM2.solve()/compute_tmatrix(), and transitively FaSTMM's own
+    solve()/compute_tmatrix()) funnels through -- pin that it actually goes
+    through resolve_n_threads() rather than handing a raw negative value
+    straight to omp_set_num_threads() (undefined behavior)."""
+    import pyfastmm._fastmm as fastmm_mod
+
+    seen = {}
+    orig_resolve = fastmm_mod.resolve_n_threads
+
+    def spy(n):
+        seen["arg"] = n
+        return orig_resolve(n)
+
+    monkeypatch.setattr(fastmm_mod, "resolve_n_threads", spy)
+    FaSTMM2().set_num_threads(-1)
+    assert seen["arg"] == -1
 
 
 def test_orientation_average_matches_fixed_for_single_sphere():
