@@ -31,6 +31,30 @@ import sys
 import tempfile
 
 
+def _driver_safe_ldflags(flags):
+    """Translate linker-direct flags into compiler-driver-safe form.
+
+    NIX_LDFLAGS is written for `ld` itself (nix's cc-wrapper normally
+    consumes it), so it contains bare `-rpath <path>` pairs -- which
+    gfortran's *driver* (what meson/f2py invoke with LDFLAGS) rejects
+    with "unrecognized command-line option '-rpath'". Rewrite each pair
+    as `-Wl,-rpath,<path>`; everything else (-L..., -l...) passes through
+    unchanged. Without this, any rebuild inside a devenv/nix shell that
+    exports NIX_LDFLAGS fails at meson's compiler sanity check.
+    """
+    toks = flags.split()
+    out = []
+    i = 0
+    while i < len(toks):
+        if toks[i] == "-rpath" and i + 1 < len(toks):
+            out.append(f"-Wl,-rpath,{toks[i + 1]}")
+            i += 2
+        else:
+            out.append(toks[i])
+            i += 1
+    return " ".join(out)
+
+
 def main():
     output_path = os.path.abspath(sys.argv[1])
     only_names = sys.argv[2].split(",")
@@ -43,7 +67,7 @@ def main():
     ldflags = "-Wl,-z,noexecstack -fopenmp"
     nix_ldflags = env.get("NIX_LDFLAGS", "")
     if nix_ldflags:
-        ldflags = f"{nix_ldflags} {ldflags}"
+        ldflags = f"{_driver_safe_ldflags(nix_ldflags)} {ldflags}"
     env["LDFLAGS"] = f"{env['LDFLAGS']} {ldflags}" if env.get("LDFLAGS") else ldflags
 
     with tempfile.TemporaryDirectory() as scratch:
