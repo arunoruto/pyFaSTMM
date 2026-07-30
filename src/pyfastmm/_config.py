@@ -54,14 +54,17 @@ from __future__ import annotations
 
 import os
 import tomllib
+import warnings
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import numpy as np
 from pydantic import BaseModel, Field, model_validator
 
 from pyfastmm._cluster import FaSTMM
+from pyfastmm._fastmm import resolve_n_threads
 
 # ---------------------------------------------------------------------------
 # Pydantic models
@@ -254,6 +257,26 @@ class SolverConfig(BaseModel):
     oversubscribe the machine if this isn't kept conservative). May be
     negative, meaning an offset from os.cpu_count() -- see
     resolve_n_threads()."""
+    sweep_threads: int | float = 1
+    """Number of *wavelengths* solved concurrently by run_resolved(), via a
+    Python thread pool. Real concurrency, not GIL-serialized: the Fortran
+    entry points release the GIL (`!f2py threadsafe`) and hold no process-
+    global state, so independent solves genuinely overlap in one process --
+    sharing memory, with none of multiprocessing's pickling/spawn cost.
+    This is a *different axis* than n_threads (OpenMP threads *inside* one
+    solve): total CPU pressure is roughly sweep_threads * n_threads, and
+    run_resolved() warns if that product exceeds os.cpu_count(). For many
+    wavelengths of a modest cluster, prefer raising sweep_threads over
+    n_threads -- independent solves scale perfectly, while OpenMP-inside-
+    one-solve was measured to fall off past ~8 threads (see
+    FaSTMM2.solve()'s docstring). Defaults to 1 (serial, the pre-existing
+    behavior) for the same reason n_threads does: a caller running many
+    sweeps under its own process-level parallelism (spcwth's campaign.py,
+    a Dask worker with multiple task slots) must not be silently
+    oversubscribed by a nested pool it didn't ask for. Accepts the same
+    shapes as n_threads: positive int (absolute), negative (offset from
+    os.cpu_count()), float in (0, 1] (fraction of it) -- see
+    resolve_n_threads()."""
 
 
 class OutputConfig(BaseModel):
@@ -340,6 +363,17 @@ class SweepConfig(BaseModel):
         instance at all (e.g. on a Dask worker that never had one, only
         the already-resolved arrays shipped to it).
 
+        With ``resolved.solver.sweep_threads`` resolving to more than 1,
+        wavelengths are solved concurrently in a thread pool -- real
+        concurrency, since the Fortran entry points release the GIL and
+        are safe under concurrent calls (see tests/test_concurrency.py).
+        Results are always returned in wavelength order, regardless of
+        completion order. ``progress_callback`` is then invoked as
+        completions arrive (so the reported wavelengths won't generally be
+        in sweep order), but always from *this* calling thread -- never
+        from a pool thread -- so callbacks driving UIs (Streamlit, rich)
+        need no locking of their own.
+
         Returns
         -------
         list of dicts, one per wavelength, each the same dict solve() (or
@@ -347,9 +381,10 @@ class SweepConfig(BaseModel):
         "wavelength_m" and "k" keys.
         """
         solver = resolved.solver
-        results = []
         n = len(resolved.wavelengths_m)
-        for i, wl in enumerate(resolved.wavelengths_m):
+
+        def solve_one(i: int) -> dict:
+            wl = resolved.wavelengths_m[i]
             fastmm = FaSTMM(
                 resolved.coords,
                 resolved.radii,
@@ -385,11 +420,57 @@ class SweepConfig(BaseModel):
                 )
             result["wavelength_m"] = float(wl)
             result["k"] = result.pop("k_medium")
-            results.append(result)
-            if progress_callback is not None:
-                progress_callback((i + 1) / n, float(wl))
+            return result
 
-        return results
+        sweep_threads = min(resolve_n_threads(solver.sweep_threads), n) if n else 1
+
+        if sweep_threads <= 1:
+            # Serial path, byte-identical to the pre-sweep_threads behavior
+            # (in-order progress callbacks included).
+            results = []
+            for i, wl in enumerate(resolved.wavelengths_m):
+                results.append(solve_one(i))
+                if progress_callback is not None:
+                    progress_callback((i + 1) / n, float(wl))
+            return results
+
+        # Total CPU pressure is sweep_threads * per-solve OpenMP threads.
+        # Warn rather than raise: the caller may know better (e.g. solves
+        # that block on memory bandwidth, or a deliberate benchmark) -- but
+        # silent oversubscription is exactly the failure mode both defaults
+        # are set to 1 to avoid, so it must not pass unremarked. Skipped for
+        # n_threads == 0, spcwth's "resolve per Dask worker at runtime"
+        # sentinel (resolve_n_threads() rejects 0; campaign.py replaces it
+        # before calling here, but don't crash the warning path if some
+        # other caller doesn't).
+        if solver.n_threads != 0:
+            total = sweep_threads * resolve_n_threads(solver.n_threads)
+            cpu_count = os.cpu_count() or 1
+            if total > cpu_count:
+                warnings.warn(
+                    f"sweep_threads ({sweep_threads}) * n_threads "
+                    f"(resolving to {resolve_n_threads(solver.n_threads)}) "
+                    f"= {total} exceeds os.cpu_count() ({cpu_count}) -- "
+                    "the concurrent solves will oversubscribe the machine. "
+                    "Keep sweep_threads * n_threads <= cpu_count.",
+                    stacklevel=2,
+                )
+
+        slots: list[dict | None] = [None] * n
+        with ThreadPoolExecutor(max_workers=sweep_threads) as pool:
+            futures = {pool.submit(solve_one, i): i for i in range(n)}
+            done = 0
+            # as_completed runs in this thread, so progress_callback never
+            # sees a pool thread (see docstring) -- and a failed solve
+            # raises here immediately rather than being swallowed until
+            # some later .result() call.
+            for future in as_completed(futures):
+                i = futures[future]
+                slots[i] = future.result()
+                done += 1
+                if progress_callback is not None:
+                    progress_callback(done / n, float(resolved.wavelengths_m[i]))
+        return cast("list[dict]", slots)  # every slot filled above
 
     def run(
         self,
@@ -417,6 +498,41 @@ class SweepConfig(BaseModel):
         instead.
         """
         return self.run_resolved(self.resolve_inputs(base_dir), progress_callback)
+
+    def run_dask(
+        self,
+        base_dir: str | os.PathLike[str] = "",
+        progress_callback: Any = None,
+        *,
+        client: Any = None,
+        scheduler_address: str | None = None,
+    ) -> list[dict]:
+        """Run the sweep distributed over a Dask cluster: one task per
+        wavelength, results in wavelength order -- the distributed
+        counterpart of :meth:`run`, with the same return shape and the
+        same ``progress_callback`` contract.
+
+        ``resolve_inputs()`` (all file I/O) still happens *here*, on the
+        machine with access to ``base_dir``; only the resolved arrays
+        ship to the workers. Requires the ``dask`` extra
+        (``pip install pyfastmm[dask]``) -- the core package never
+        imports dask; see :mod:`pyfastmm._dask` (and its docstring for
+        what workers must have installed, and how the local
+        ``devenv up`` scheduler fits in).
+
+        Pass an already-connected *client* (caller owns it, never closed
+        here), or a *scheduler_address* (e.g. ``"tcp://127.0.0.1:8786"``,
+        connected and closed here), or neither (a temporary local
+        cluster, for testing).
+        """
+        from pyfastmm._dask import run_resolved_dask
+
+        return run_resolved_dask(
+            self.resolve_inputs(base_dir),
+            progress_callback,
+            client=client,
+            scheduler_address=scheduler_address,
+        )
 
 
 # ---------------------------------------------------------------------------

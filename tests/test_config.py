@@ -307,6 +307,128 @@ def test_run_matches_resolve_then_run_resolved():
     assert via_classmethod_call[0]["c_ext"] == pytest.approx(via_run[0]["c_ext"])
 
 
+def _inline_two_sphere_cfg(n_wavelengths=4, **solver_kwargs):
+    """A small config + monkeyed loader shared by the sweep_threads tests:
+    real solves (cheap: 2 spheres, N_theta=11, N_phi=1), several
+    wavelengths so concurrency actually happens."""
+    return SweepConfig(
+        particles=ParticlesConfig(refractive_index=(1.5, 0.01)),
+        wavelengths=WavelengthsConfig(
+            values=[5.0 + i for i in range(n_wavelengths)], scale=1.0
+        ),
+        solver=SolverConfig(N_theta=11, N_phi=1, acc=1, **solver_kwargs),
+    )
+
+
+def _resolve_with_inline_cluster(cfg):
+    import pyfastmm._config as config_mod
+
+    orig_load = config_mod.ParticlesConfig.load_positions
+    config_mod.ParticlesConfig.load_positions = lambda *_a, **_kw: np.array(
+        [[-1.5, 0.0, 0.0, 1.0], [1.5, 0.0, 0.0, 1.0]]
+    )
+    try:
+        return cfg.resolve_inputs()
+    finally:
+        config_mod.ParticlesConfig.load_positions = orig_load
+
+
+def test_solver_config_sweep_threads_default_and_shapes():
+    """sweep_threads defaults to 1 (serial -- pre-existing behavior, and
+    the safe value under a caller's own process-level parallelism) and
+    must accept the same negative-offset/float-fraction shapes as
+    n_threads without pydantic coercing them."""
+    assert SolverConfig().sweep_threads == 1
+    assert SolverConfig(sweep_threads=4).sweep_threads == 4
+    assert SolverConfig(sweep_threads=-1).sweep_threads == -1
+    assert SolverConfig(sweep_threads=0.5).sweep_threads == pytest.approx(0.5)
+
+
+def test_sweep_threads_concurrent_matches_serial():
+    """The whole point of sweep_threads: concurrent wavelengths must
+    produce bit-comparable physics to the serial loop, in the same
+    (wavelength) order regardless of completion order. A regression here
+    means the thread pool scrambled results or the concurrent solves
+    contaminated each other (cf. tests/test_concurrency.py, which pins
+    the same property one level down at the FaSTMM2.solve() layer)."""
+    resolved_serial = _resolve_with_inline_cluster(_inline_two_sphere_cfg())
+    resolved_threaded = _resolve_with_inline_cluster(
+        _inline_two_sphere_cfg(sweep_threads=4)
+    )
+
+    serial = SweepConfig.run_resolved(resolved_serial)
+    threaded = SweepConfig.run_resolved(resolved_threaded)
+
+    assert len(serial) == len(threaded) == 4
+    for a, b in zip(serial, threaded):
+        assert a["wavelength_m"] == pytest.approx(b["wavelength_m"])
+        assert a["c_ext"] == pytest.approx(b["c_ext"])
+        assert a["c_abs"] == pytest.approx(b["c_abs"])
+        np.testing.assert_allclose(a["mueller"], b["mueller"])
+
+
+def test_sweep_threads_results_stay_in_wavelength_order():
+    resolved = _resolve_with_inline_cluster(_inline_two_sphere_cfg(sweep_threads=4))
+    results = SweepConfig.run_resolved(resolved)
+    wavelengths = [r["wavelength_m"] for r in results]
+    assert wavelengths == sorted(wavelengths)
+    np.testing.assert_allclose(wavelengths, [5.0, 6.0, 7.0, 8.0])
+
+
+def test_sweep_threads_progress_callback_runs_on_calling_thread():
+    """run_resolved()'s docstring promises progress_callback is only ever
+    invoked from the calling thread (so UI-driving callbacks need no
+    locking), with monotonically increasing fractions ending at 1.0."""
+    import threading
+
+    resolved = _resolve_with_inline_cluster(_inline_two_sphere_cfg(sweep_threads=4))
+    caller = threading.get_ident()
+    seen = []
+
+    def cb(fraction, wavelength_m):
+        assert threading.get_ident() == caller
+        seen.append((fraction, wavelength_m))
+
+    SweepConfig.run_resolved(resolved, progress_callback=cb)
+    fractions = [f for f, _ in seen]
+    assert fractions == sorted(fractions)
+    assert fractions[-1] == pytest.approx(1.0)
+    assert len(seen) == 4
+
+
+def test_sweep_threads_oversubscription_warns():
+    """sweep_threads * n_threads beyond cpu_count must warn (not raise,
+    not pass silently) -- silent oversubscription is the exact failure
+    mode both defaults being 1 exists to avoid."""
+    cpu_count = os.cpu_count() or 1
+    resolved = _resolve_with_inline_cluster(
+        # 2 concurrent wavelengths, each claiming every CPU -> guaranteed
+        # over budget on any machine.
+        _inline_two_sphere_cfg(n_wavelengths=2, sweep_threads=2, n_threads=cpu_count)
+    )
+    with pytest.warns(UserWarning, match="oversubscribe"):
+        SweepConfig.run_resolved(resolved)
+
+
+def test_sweep_threads_propagates_solve_exceptions():
+    """A failing solve must raise out of run_resolved(), not be swallowed
+    by the pool."""
+    import pyfastmm._config as config_mod
+
+    resolved = _resolve_with_inline_cluster(_inline_two_sphere_cfg(sweep_threads=4))
+
+    def boom(self, *args, **kwargs):
+        raise RuntimeError("solver exploded")
+
+    orig_solve = config_mod.FaSTMM.solve
+    config_mod.FaSTMM.solve = boom
+    try:
+        with pytest.raises(RuntimeError, match="solver exploded"):
+            SweepConfig.run_resolved(resolved)
+    finally:
+        config_mod.FaSTMM.solve = orig_solve
+
+
 def test_resolved_sweep_inputs_pickles_roundtrip():
     """ResolvedSweepInputs must survive being pickled and reconstructed --
     the actual mechanism a Dask (or ProcessPoolExecutor) worker uses to
