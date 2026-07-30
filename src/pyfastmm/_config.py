@@ -256,7 +256,17 @@ class SolverConfig(BaseModel):
     parallelism, e.g. spcwth's campaign.py, where workers * n_threads can
     oversubscribe the machine if this isn't kept conservative). May be
     negative, meaning an offset from os.cpu_count() -- see
-    resolve_n_threads()."""
+    resolve_n_threads().
+
+    ``0`` is *reserved as a downstream sentinel*, not a valid value here:
+    resolve_n_threads() rejects it, so any solve attempted with 0 raises.
+    spcwth's campaign.py uses 0 in its TOML to mean "resolve per Dask
+    worker at runtime" and replaces it with a real count on the worker
+    before run_resolved() ever executes. Deliberately NOT implemented
+    natively in pyfastmm: the right per-worker count depends on how the
+    cluster's workers are provisioned (task slots vs CPUs), which the
+    orchestrator knows and this library doesn't. pyfastmm's only
+    accommodation is skipping its oversubscription warning for 0."""
     sweep_threads: int | float = 1
     """Number of *wavelengths* solved concurrently by run_resolved(), via a
     Python thread pool. Real concurrency, not GIL-serialized: the Fortran

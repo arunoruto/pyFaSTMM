@@ -84,7 +84,10 @@ Three layers, each building on the one below — put shared physics logic at the
 - `_cluster.py` — `FaSTMM`: ergonomic class API taking refractive indices and a vacuum wavelength, applying the
   medium transform, incidence rotation, and flux-normalization correction. `version` (which solver) is a
   separate axis from `formulation` (0=STMM/1=FaSTMM/2=FaSTMM2 within a version) — two nested `match` checks,
-  deliberately not one flat list.
+  deliberately not one flat list. Stores each outcome on `self.results` as a validated pydantic model
+  (`_results.py`: `SolveResult`/`TMatrixResult` — finiteness-checked, so NaN physics fails loudly at the
+  source) while still *returning* the plain dict (`results.to_dict()`) for backward compatibility. pydantic is
+  a core dependency for this reason.
 - `_config.py` — `SweepConfig` (pydantic + TOML): wavelength sweeps. `run()` = `resolve_inputs()` +
   `run_resolved()`; the split exists so a distributed worker gets pickled arrays and needs no filesystem access.
   `run_resolved` is a `staticmethod` for that reason. `SolverConfig.sweep_threads` runs wavelengths
