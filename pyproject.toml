@@ -32,6 +32,14 @@ dependencies = ["numpy>=1.25"]
 # .github/workflows/publish.yml), which bundles it.
 dev = ["pytest>=7", "pytest-cov", "meson>=1.1", "ninja", "meson-python>=0.15", "h5py>=3.0", "pydantic>=2.0"]
 dashboard = ["streamlit>=1.28", "pandas>=2.0", "plotly>=5.0", "pydantic>=2.0"]
+# Dask-distributed sweeps (SweepConfig.run_dask / pyfastmm._dask) --
+# first-class but strictly optional: the core package never imports dask,
+# so this extra is only needed to actually distribute. Deliberately NOT
+# part of `dev`: CI installs only `dev`, so tests/test_dask.py skips
+# there (importorskip) and runs locally instead, where devenv's
+# allExtras uv sync installs this (and `devenv up` provides a local
+# scheduler/worker pair to test against -- see devenv.nix's processes).
+dask = ["distributed>=2024.1"]
 
 [project.urls]
 Repository = "https://github.com/arunoruto/pyFaSTMM"

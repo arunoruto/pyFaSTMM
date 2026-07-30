@@ -212,6 +212,7 @@ python_sources = [
   'src' / 'pyfastmm' / '_fastmm.py',
   'src' / 'pyfastmm' / '_cluster.py',
   'src' / 'pyfastmm' / '_config.py',
+  'src' / 'pyfastmm' / '_dask.py',
 ]
 
 py.install_sources(

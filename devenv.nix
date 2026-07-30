@@ -75,6 +75,26 @@
     unqualified-search-registries = ["docker.io"]
   '';
 
+  # A local Dask scheduler + worker pair for testing the distributed
+  # sweep path (pyfastmm._dask / SweepConfig.run_dask) against a *real*
+  # out-of-process cluster: `devenv up` starts both, then
+  # tests/test_dask.py's external-scheduler tests connect to
+  # tcp://127.0.0.1:8786 (they skip when nothing is listening -- e.g. in
+  # CI, which doesn't install the `dask` extra at all). The `dask` CLI
+  # comes from the venv (distributed, via the `dask` extra +
+  # languages.python.uv.sync allExtras below), so the workers share this
+  # exact venv and can import pyfastmm (compiled extension included)
+  # without any wheel shipping. 2 workers x 1 thread: enough real
+  # parallelism to catch ordering/concurrency bugs; OpenMP inside each
+  # solve stays governed by [solver].n_threads as usual.
+  # Referenced via $DEVENV_STATE/venv/bin explicitly: process scripts run
+  # with devenv's base env but *without* enterShell's venv activation, so
+  # a bare `dask` is not on their PATH.
+  processes = {
+    dask-scheduler.exec = "exec $DEVENV_STATE/venv/bin/dask scheduler --host 127.0.0.1 --port 8786";
+    dask-worker.exec = "exec $DEVENV_STATE/venv/bin/dask worker tcp://127.0.0.1:8786 --nworkers 2 --nthreads 1";
+  };
+
   enterShell = ''
     if [ ! -L "$DEVENV_ROOT/.venv" ]; then
         ln -s "$DEVENV_STATE/venv/" "$DEVENV_ROOT/.venv"

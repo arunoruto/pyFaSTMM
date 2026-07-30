@@ -1,6 +1,7 @@
 """pyfastmm -- Python bindings for FaSTMM2 (Fast Superposition T-Matrix Method)."""
 
 from pyfastmm._cluster import FaSTMM, radiative_transfer_phase_function, rotate_for_incidence
+from pyfastmm._dask import run_resolved_dask
 from pyfastmm._fastmm import (
     FaSTMM2,
     eps_from_index,
@@ -22,5 +23,6 @@ __all__ = [
     "radiative_transfer_phase_function",
     "resolve_n_threads",
     "rotate_for_incidence",
+    "run_resolved_dask",
 ]
 __version__ = "1.0.0"
