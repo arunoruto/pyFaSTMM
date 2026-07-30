@@ -1,0 +1,26 @@
+--- a/external/fastmm2/src/T_matrix.f90
++++ b/external/fastmm2/src/T_matrix.f90
+@@ -6,12 +6,12 @@
+ 
+ contains
+ 
+-subroutine compute_T_matrix(sphere, otree, Tmat, k, Nmax, tol, restart, maxit, Taa, Tab, Tba, Tbb)
++subroutine compute_T_matrix(sphere, otree, Tmat, k, Nmax, tol, restart, maxit, n_threads, Taa, Tab, Tba, Tbb)
+ type (data_struct), dimension(:) :: sphere
+ type (level_struct), dimension(:) :: otree
+ type (Tmatrix), dimension(:) :: Tmat
+ complex(dp) :: k
+-integer :: Nmax, maxit, restart 
++integer :: Nmax, maxit, restart, n_threads
+ real(dp) :: tol
+ integer :: i1, t1,t2,rate
+ complex(dp) :: a_in((Nmax + 1)**2-1), b_in((Nmax + 1)**2-1)
+@@ -52,7 +52,7 @@
+   allocate(x(size(rhs)))
+   allocate(x2(size(rhs2)))
+ 
+-  call gmres_mlfmm2(sphere, otree, Tmat, k, rhs,rhs2, x,x2, tol, restart, maxit)
++  call gmres_mlfmm2(sphere, otree, Tmat, k, rhs,rhs2, x,x2, tol, restart, maxit, n_threads)
+ 
+   !call gmres(sphere, k, rhs, x, dble(1e-3), 4, 20) 
+   call cluster_coeff(sphere, x, k, a_nm, b_nm, Nmax)

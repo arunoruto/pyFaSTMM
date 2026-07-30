@@ -1,0 +1,70 @@
+--- a/external/fastmm2/src/mie.f90
++++ b/external/fastmm2/src/mie.f90
+@@ -1012,13 +1012,13 @@
+ end subroutine compute_cluster_fields
+ 
+ 
+-subroutine mueller_matrix(sphere, x, x2, b_vec, b_vec2, k, N_theta, N_phi, Nmax, S_out, J_out, crs, theta_inc, phi_inc)
++subroutine mueller_matrix(sphere, x, x2, b_vec, b_vec2, k, N_theta, N_phi, Nmax, S_out, J_out, crs, theta_inc, phi_inc, n_threads)
+ type (data_struct), dimension(:) :: sphere
+ complex(dp), dimension(:) :: x, x2
+ complex(dp) :: k
+ real(dp) :: theta_inc, phi_inc
+ real(dp), dimension(:,:), allocatable :: S_out
+-integer :: N_phi, N_theta, Nmax
++integer :: N_phi, N_theta, Nmax, n_threads
+ complex(dp), dimension(:) :: b_vec, b_vec2
+ complex(dp), dimension(:,:), allocatable :: E_out, E_out2, J_out
+ 
+@@ -1048,8 +1048,8 @@
+ !print*, 'Post processing done in ', real(T2-T1) / real(rate),'s'
+ !deallocate(E_out, E_out2)
+ call system_clock(t1,rate)
+-call compute_cluster_fields_far(sphere, x, b_vec, k, N_theta, N_phi, E_out,crs1)
+-call compute_cluster_fields_far(sphere, x2, b_vec2, k, N_theta, N_phi, E_out2,crs2)
++call compute_cluster_fields_far(sphere, x, b_vec, k, N_theta, N_phi, E_out,crs1, n_threads)
++call compute_cluster_fields_far(sphere, x2, b_vec2, k, N_theta, N_phi, E_out2,crs2, n_threads)
+ call system_clock(t2)
+ print*, 'Post processing done in ', real(T2-T1) / real(rate),'s'
+ 
+@@ -1296,13 +1296,13 @@
+ ! Computes farfields and cross sections for a cluster  
+ !
+ !**********************************************************************
+-subroutine compute_cluster_fields_far(sphere, x, rhs, k, N_theta, N_phi, E_out,crs)
++subroutine compute_cluster_fields_far(sphere, x, rhs, k, N_theta, N_phi, E_out,crs, n_threads)
+ type (data_struct), dimension(:) :: sphere
+ complex(dp), dimension(:) :: x, rhs
+ complex(dp) :: k
+ complex(dp), dimension(:,:), allocatable :: E_out
+ 
+-integer :: sph, a1, a2, b1, b2, Nmax, N_phi, N_theta, i1, i2, las, mm, ind, m, n, ithre, nthreads
++integer :: sph, a1, a2, b1, b2, Nmax, N_phi, N_theta, i1, i2, las, mm, ind, m, n, ithre, nthreads, n_threads
+ real(dp) :: phi, theta, r(3), RR, cp(3), Cext, Csca, Cabs, q
+ real(dp) :: Cext2, Csca2, Cabs2, rad, absb, rhat(3), Csca_int,crs(5)
+ complex(dp) :: F(3), G(3), epsr, kr, alpha, beta, gamma,  Y, Y1, Y2, cc, sph1, sph2, ff
+@@ -1328,11 +1328,10 @@
+ Cabs = 0.0
+ Csca_int = 0.0
+ 
+-nthreads = 1
+-
+-!$omp parallel default(shared) 
+-!$ nthreads = omp_get_num_threads()
+-!$omp end parallel
++! n_threads is now an explicit argument (see this file's patch), threaded
++! all the way from the f2py entry point -- no need to query OpenMP's own
++! (process-global) thread count via a throwaway parallel region anymore.
++nthreads = n_threads
+ 
+ allocate(Ax(3,N_theta*N_phi, nthreads))
+ allocate(Aabs(nthreads), Aext(nthreads))
+@@ -1342,7 +1341,7 @@
+ Aext(:) = 0.0_dp
+ ithre = 1
+ 
+-!$omp parallel default(private) &
++!$omp parallel default(private) num_threads(n_threads) &
+ !$omp firstprivate(N_phi, N_theta, k, kr, RR) &
+ !$omp shared(Cabs, Cext, sphere,x, Ax, Aabs, Aext, rhs)
+ !$omp do schedule(guided)

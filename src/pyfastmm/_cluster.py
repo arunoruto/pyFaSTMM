@@ -203,7 +203,7 @@ class FaSTMM:
         process- or thread-level parallelism (e.g. a campaign sweep) would
         otherwise oversubscribe the machine by workers * OpenMP's default
         thread count without asking for it. Raise it explicitly for a
-        single, one-off solve (see ``set_num_threads()``'s docstring for
+        single, one-off solve (see ``FaSTMM2.solve()``'s docstring for
         measured scaling -- more isn't always better past your physical
         core count). May also be negative (an offset from
         ``os.cpu_count()``, e.g. ``-2`` to leave 2 CPUs free) or a float
@@ -297,12 +297,14 @@ class FaSTMM:
         tol=1e-4,
         restart=5,
         max_iter=50,
+        truncation_formula=0,
         n_threads: int | float = 1,
     ):
         """Compute the cluster's T-matrix at ``wavelength_vacuum``. Same
         medium transform as ``solve()``; no flux-normalization correction
         applies here (the T-matrix has no cross sections to correct).
-        ``n_threads`` defaults to 1 -- see ``solve()``'s docstring.
+        ``truncation_formula``/``n_threads`` default the same way as
+        ``solve()`` -- see its docstring.
 
         Raises
         ------
@@ -320,6 +322,7 @@ class FaSTMM:
                     tol=tol,
                     restart=restart,
                     max_iter=max_iter,
+                    truncation_formula=truncation_formula,
                     n_threads=n_threads,
                 )
             case _:
@@ -335,6 +338,7 @@ class FaSTMM:
         tol,
         restart,
         max_iter,
+        truncation_formula,
         n_threads,
     ):
         _validate_formulation_v2(formulation)
@@ -351,6 +355,7 @@ class FaSTMM:
             tol=tol,
             restart=restart,
             max_iter=max_iter,
+            truncation_formula=truncation_formula,
             n_threads=n_threads,
         )
         result["k_medium"] = k_medium

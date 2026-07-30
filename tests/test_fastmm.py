@@ -139,8 +139,8 @@ def test_radiative_transfer_phase_function_normalizes_to_4pi():
 
 def test_n_threads_defaults_to_one_and_does_not_change_results():
     """n_threads defaults to 1 (not "all cores") -- see solve()'s
-    docstring for why -- and, like set_num_threads() itself, must be a
-    pure performance knob: results identical regardless of value."""
+    docstring for why -- and must be a pure performance knob: results
+    identical regardless of value."""
     import inspect
 
     assert inspect.signature(FaSTMM.solve).parameters["n_threads"].default == 1

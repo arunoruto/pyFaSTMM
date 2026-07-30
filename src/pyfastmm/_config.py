@@ -62,7 +62,6 @@ import numpy as np
 from pydantic import BaseModel, Field, model_validator
 
 from pyfastmm._cluster import FaSTMM
-from pyfastmm._fastmm import FaSTMM2
 
 # ---------------------------------------------------------------------------
 # Pydantic models
@@ -240,7 +239,7 @@ class SolverConfig(BaseModel):
     N_ave: int = 0  # 0 = fixed orientation
     halton_init: int = 0
     truncation_formula: int = 0
-    """Per-sphere Mie truncation formula (see FaSTMM2.set_truncation_formula).
+    """Per-sphere Mie truncation formula (see FaSTMM2.solve()'s docstring).
     0 (default, unchanged from pre-v1.1 behavior): floor(ka + 3*ka**(1/3)),
     min 6. 1: the more conservative formula -- needed for touching,
     small-ka, high-refractive-index-contrast clusters (e.g. nanometer-scale
@@ -348,9 +347,6 @@ class SweepConfig(BaseModel):
         "wavelength_m" and "k" keys.
         """
         solver = resolved.solver
-        # Only matters for the compute_tmatrix branch below -- FaSTMM.solve()
-        # passes truncation_formula explicitly on every call instead.
-        FaSTMM2().set_truncation_formula(solver.truncation_formula)
         results = []
         n = len(resolved.wavelengths_m)
         for i, wl in enumerate(resolved.wavelengths_m):
@@ -369,6 +365,7 @@ class SweepConfig(BaseModel):
                     tol=solver.tolerance,
                     restart=solver.restart,
                     max_iter=solver.max_iterations,
+                    truncation_formula=solver.truncation_formula,
                     n_threads=solver.n_threads,
                 )
             else:

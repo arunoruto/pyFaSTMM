@@ -137,7 +137,7 @@ def test_complex_k_absorbing_medium_no_nan():
     )
 
 
-def test_set_num_threads_does_not_change_results():
+def test_n_threads_does_not_change_results():
     """Thread count must be purely a performance knob -- results have to
     be identical (well within GMRES/quadrature tolerance) regardless of
     how many OpenMP threads the matvec/solver/far-field code use."""
@@ -164,12 +164,12 @@ def test_set_num_threads_does_not_change_results():
         )
 
 
-def test_set_num_threads_calls_resolve_n_threads(monkeypatch):
-    """set_num_threads() is the single choke point every n_threads-taking
-    call (FaSTMM2.solve()/compute_tmatrix(), and transitively FaSTMM's own
-    solve()/compute_tmatrix()) funnels through -- pin that it actually goes
-    through resolve_n_threads() rather than handing a raw negative value
-    straight to omp_set_num_threads() (undefined behavior)."""
+def test_solve_n_threads_calls_resolve_n_threads(monkeypatch):
+    """solve() is the single choke point every n_threads-taking call
+    (FaSTMM2.solve()/compute_tmatrix(), and transitively FaSTMM's own
+    solve()/compute_tmatrix()) funnels through -- pin that a negative
+    n_threads actually goes through resolve_n_threads() rather than
+    reaching the Fortran extension raw (undefined behavior there)."""
     import pyfastmm._fastmm as fastmm_mod
 
     seen = {}
@@ -180,7 +180,15 @@ def test_set_num_threads_calls_resolve_n_threads(monkeypatch):
         return orig_resolve(n)
 
     monkeypatch.setattr(fastmm_mod, "resolve_n_threads", spy)
-    FaSTMM2().set_num_threads(-1)
+    FaSTMM2().solve(
+        coords=[[0.0, 0.0, 0.0]],
+        radii=[1.0],
+        eps=[2.5 + 0.1j],
+        k=1.0,
+        N_theta=11,
+        N_phi=1,
+        n_threads=-1,
+    )
     assert seen["arg"] == -1
 
 

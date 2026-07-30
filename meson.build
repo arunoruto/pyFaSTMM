@@ -80,6 +80,73 @@ mie_patched = custom_target(
   command: [py, files('tools' / 'apply_patch.py'), '@INPUT0@', '@INPUT1@', '@OUTPUT@'],
 )
 
+# --- Patched copies threading an explicit n_threads (and, where used,
+#     truncation_formula) argument through every reachable !$omp parallel
+#     region, replacing the old omp_set_num_threads()/module-global-variable
+#     state those regions used to rely on implicitly. That state made
+#     concurrent calls into this extension unsafe (two Python threads
+#     racing to set different values before their own solve) -- these
+#     patches are what let fastmm2_f2py.f90 safely mark its entry points
+#     `!f2py threadsafe` (releasing the GIL during the call, like numpy/
+#     scipy's own C/Fortran-backed operations do) without that race. Same
+#     CLI-isolation rationale as gaussquad_patched/mie_patched above: these
+#     4 files are also compiled into the standalone FaSTMM2 CLI binary
+#     (external/fastmm2/src/CMakeLists.txt), so they're patched into scratch
+#     copies rather than edited in place, keeping the CLI build on
+#     unmodified upstream source.
+solver_patched = custom_target(
+  'solver-patched',
+  input: [
+    fastmm2_dir / 'solver.f90',
+    patches_dir / 'solver-n-threads-threading.patch',
+  ],
+  output: 'solver.f90',
+  command: [py, files('tools' / 'apply_patch.py'), '@INPUT0@', '@INPUT1@', '@OUTPUT@'],
+)
+
+matvec_adaptive_patched = custom_target(
+  'matvec-adaptive-patched',
+  input: [
+    fastmm2_dir / 'matvec_adaptive.f90',
+    patches_dir / 'matvec-adaptive-n-threads-threading.patch',
+  ],
+  output: 'matvec_adaptive.f90',
+  command: [py, files('tools' / 'apply_patch.py'), '@INPUT0@', '@INPUT1@', '@OUTPUT@'],
+)
+
+t_matrix_patched = custom_target(
+  't-matrix-patched',
+  input: [
+    fastmm2_dir / 'T_matrix.f90',
+    patches_dir / 't-matrix-n-threads-threading.patch',
+  ],
+  output: 'T_matrix.f90',
+  command: [py, files('tools' / 'apply_patch.py'), '@INPUT0@', '@INPUT1@', '@OUTPUT@'],
+)
+
+orientation_averaging_patched = custom_target(
+  'orientation-averaging-patched',
+  input: [
+    fastmm2_dir / 'orientation_averaging.f90',
+    patches_dir / 'orientation-averaging-n-threads-threading.patch',
+  ],
+  output: 'orientation_averaging.f90',
+  command: [py, files('tools' / 'apply_patch.py'), '@INPUT0@', '@INPUT1@', '@OUTPUT@'],
+)
+
+# Chained on top of mie_patched's own output (not the pristine file) --
+# keeps the far-field-distance-fix patch and this one as two separate,
+# independently-reviewable concerns rather than folding both into one.
+mie_threadsafe_patched = custom_target(
+  'mie-threadsafe-patched',
+  input: [
+    mie_patched,
+    patches_dir / 'mie-gil-release-n-threads.patch',
+  ],
+  output: 'mie_threadsafe.f90',
+  command: [py, files('tools' / 'apply_patch.py'), '@INPUT0@', '@INPUT1@', '@OUTPUT@'],
+)
+
 # --- The f2py extension itself ---
 #
 # Built via numpy.f2py's own "-c" compile mode (the same command
@@ -104,7 +171,6 @@ mie_patched = custom_target(
 # on the same build), so there's no second list to keep in sync with.
 f2py_only = [
   'fastmm2_solve_fixed', 'fastmm2_solve_averaged', 'fastmm2_compute_tmatrix',
-  'fastmm2_set_num_threads',
 ]
 
 f2py_sources = [
@@ -115,14 +181,14 @@ f2py_sources = [
   fastmm2_dir / 'possu.f90',
   fastmm2_dir / 'sfunctions.f90',
   fastmm2_dir / 'translations.f90',
-  mie_patched,
+  mie_threadsafe_patched,
   fastmm2_dir / 'geometry.f90',
   fastmm2_dir / 'octtree_adaptive.f90',
   fastmm2_dir / 'interpolation.f90',
-  fastmm2_dir / 'matvec_adaptive.f90',
-  fastmm2_dir / 'solver.f90',
-  fastmm2_dir / 'orientation_averaging.f90',
-  fastmm2_dir / 'T_matrix.f90',
+  matvec_adaptive_patched,
+  solver_patched,
+  orientation_averaging_patched,
+  t_matrix_patched,
   wrapper_dir / 'fastmm2_f2py.f90',
 ]
 

@@ -193,55 +193,6 @@ class FaSTMM2:
     def __init__(self):
         self._ext = _ext
 
-    def set_truncation_formula(self, formula: int = 0) -> None:
-        """Choose the per-sphere Mie truncation formula.
-
-        0 (default): ``truncation_order``  -- ``floor(ka + 3*ka^(1/3))``, min 6.
-        1: ``truncation_order2`` -- more conservative formula that gives
-           larger expansion orders, especially for small ``ka`` where
-           FaSTMM2's default can under-resolve near-field coupling of
-           touching spheres.
-
-        Must be called *before* ``solve()`` or ``compute_tmatrix()`` --
-        this sets a module-level Fortran variable, so it affects all
-        subsequent calls (not just this instance, not thread-safe).
-
-        New in v1.1.
-        """
-        self._ext.fastmm2_f2py_bindings.truncation_formula = formula
-
-    def set_num_threads(self, n: int | float) -> None:
-        """Set the OpenMP thread count used by the parallel regions in the
-        GMRES matrix-vector product (the per-iteration hot path), the
-        solver, and far-field evaluation -- all already built with
-        -fopenmp, but previously only controllable via the OMP_NUM_THREADS
-        environment variable, which libgomp reads once at first use and
-        ignores further changes to (confirmed: setting it from Python
-        mid-process has no effect). This calls the standard
-        omp_set_num_threads() runtime function directly, so it takes
-        effect on the very next solve()/compute_tmatrix() call.
-
-        ``n`` may be negative -- see ``resolve_n_threads()`` -- to mean an
-        offset from ``os.cpu_count()`` rather than an absolute count.
-
-        Measured on a real 128-sphere touching iron-in-olivine aggregate
-        (16 logical cores): near-linear speedup through 8 threads (4.7x
-        over 1 thread), but *worse* at 16 than at 8 (oversubscription) --
-        picking a good value for your hardware matters more than "more is
-        better". Also relevant when composing with process-level
-        parallelism (e.g. running many solves across a multiprocessing
-        pool): each worker process gets its own OpenMP thread pool, so
-        workers * n_threads can oversubscribe the machine if you don't
-        account for it.
-
-        Must be called *before* solve()/compute_tmatrix() -- this affects
-        the whole process (OpenMP has no per-call thread count), same
-        process-global caveat as set_truncation_formula().
-
-        New in v1.2.
-        """
-        self._ext.fastmm2_f2py_bindings.fastmm2_set_num_threads(resolve_n_threads(n))
-
     def solve(
         self,
         coords,
@@ -293,15 +244,34 @@ class FaSTMM2:
         tol, restart, max_iter : float, int, int
             GMRES solver parameters.
         truncation_formula : int, optional
-            Per-sphere Mie truncation formula (0=default, 1=conservative).
-            Convenience wrapper around ``set_truncation_formula()``.  When
-            None (default), does not change the current setting.
+            Per-sphere Mie truncation formula: 0 (default) --
+            ``truncation_order``, ``floor(ka + 3*ka^(1/3))``, min 6; 1 --
+            ``truncation_order2``, a more conservative formula that gives
+            larger expansion orders, especially for small ``ka`` where the
+            default can under-resolve near-field coupling of touching
+            spheres. ``None`` (default) resolves to 0. A real, per-call
+            argument passed straight through to the Fortran extension
+            (not global/process state -- see ``!f2py threadsafe`` on the
+            wrapped subroutines), so concurrent calls with different
+            values from different Python threads are safe.
         n_threads : int, optional
-            OpenMP thread count.  Convenience wrapper around
-            ``set_num_threads()``.  When None (default), does not change
-            the current setting (which, absent any call, is whatever
-            OMP_NUM_THREADS was at process start, or OpenMP's own default
-            -- typically all visible cores).
+            OpenMP thread count used by the GMRES matrix-vector product
+            (the per-iteration hot path), the solver, and far-field
+            evaluation. May be negative -- see ``resolve_n_threads()`` --
+            to mean an offset from ``os.cpu_count()`` rather than an
+            absolute count, or a float in (0, 1] for a fraction of it.
+            ``None`` (default) resolves to 1 -- deliberately conservative,
+            since a caller solving many clusters across its own process-
+            or thread-level parallelism (e.g. a campaign sweep) would
+            otherwise oversubscribe the machine by workers * OpenMP's
+            default thread count without asking for it. Raise it
+            explicitly for a single, one-off solve: measured on a real
+            128-sphere touching iron-in-olivine aggregate (16 logical
+            cores), near-linear speedup through 8 threads (4.7x over 1
+            thread), but *worse* at 16 than at 8 (oversubscription) --
+            picking a good value for your hardware matters more than
+            "more is better". Like truncation_formula, a real per-call
+            argument -- safe under concurrent calls with different values.
 
         Returns
         -------
@@ -322,10 +292,10 @@ class FaSTMM2:
             asymmetry : float
                 Asymmetry parameter <cos(theta)>.
         """
-        if truncation_formula is not None:
-            self.set_truncation_formula(truncation_formula)
-        if n_threads is not None:
-            self.set_num_threads(n_threads)
+        resolved_truncation_formula = (
+            0 if truncation_formula is None else truncation_formula
+        )
+        resolved_n_threads = 1 if n_threads is None else resolve_n_threads(n_threads)
 
         _, coords_f, radii_f, eps_r, eps_i = _prepare_geometry(coords, radii, eps)
 
@@ -343,6 +313,8 @@ class FaSTMM2:
                 tol,
                 restart,
                 max_iter,
+                resolved_truncation_formula,
+                resolved_n_threads,
             )
             result = {"mueller": mueller, "jones": jones}
         else:
@@ -361,6 +333,8 @@ class FaSTMM2:
                 tol,
                 restart,
                 max_iter,
+                resolved_truncation_formula,
+                resolved_n_threads,
             )
             result = {"mueller": mueller}
 
@@ -379,6 +353,7 @@ class FaSTMM2:
         tol=1e-4,
         restart=5,
         max_iter=50,
+        truncation_formula: int | None = None,
         n_threads: int | float | None = None,
     ):
         """Compute the T-matrix of a cluster of spherical monomers.
@@ -389,9 +364,8 @@ class FaSTMM2:
             Same meaning as in solve().
         t_order : int
             Requested T-matrix truncation order.
-        n_threads : int, optional
-            Same meaning as in solve() -- convenience wrapper around
-            set_num_threads().
+        truncation_formula, n_threads : int, optional
+            Same meaning as in solve().
 
         Returns
         -------
@@ -399,8 +373,10 @@ class FaSTMM2:
         (nm, nm) where nm = get_tmatrix_size(t_order), ordered as
         (-1(1),0(1),1(1),-2(2),...,N(N)).
         """
-        if n_threads is not None:
-            self.set_num_threads(n_threads)
+        resolved_truncation_formula = (
+            0 if truncation_formula is None else truncation_formula
+        )
+        resolved_n_threads = 1 if n_threads is None else resolve_n_threads(n_threads)
 
         _, coords_f, radii_f, eps_r, eps_i = _prepare_geometry(coords, radii, eps)
         nm = get_tmatrix_size(t_order)
@@ -418,5 +394,7 @@ class FaSTMM2:
             tol,
             restart,
             max_iter,
+            resolved_truncation_formula,
+            resolved_n_threads,
         )
         return {"Taa": Taa, "Tab": Tab, "Tba": Tba, "Tbb": Tbb}

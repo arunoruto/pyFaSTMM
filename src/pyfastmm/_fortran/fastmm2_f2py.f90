@@ -18,37 +18,9 @@ use solver
 use mie
 use orientation_averaging
 use T_matrix
-use omp_lib
 implicit none
 
-!
-!  Module-level variable so the Python side can choose the truncation
-!  formula before calling solve()/compute_tmatrix(). 0 = default
-!  (truncation_order, floor(ka+3*ka^(1/3))), 1 = conservative
-!  (truncation_order2, larger order for a given ka -- typically closer
-!  to Wiscombe, especially for small ka where near-field coupling of
-!  touching spheres needs more terms).
-!
-integer, save :: truncation_formula = 0
-
 contains
-
-!
-!  Set the OpenMP thread count used by the parallel regions in matvec's
-!  matrix-vector product (the GMRES hot path), solver.f90, and mie.f90's
-!  far-field evaluation (all already !$omp-parallel and built with
-!  -fopenmp -- this just makes the thread count controllable from Python
-!  instead of being fixed at whatever OMP_NUM_THREADS happened to be when
-!  the process started, which libgomp reads once and then ignores further
-!  changes to). Calls the standard omp_set_num_threads() runtime function;
-!  affects the whole process (OpenMP has no per-call thread count), same
-!  process-global caveat as truncation_formula above.
-!
-subroutine fastmm2_set_num_threads(n)
-    implicit none
-    integer, intent(in) :: n
-    call omp_set_num_threads(n)
-end subroutine fastmm2_set_num_threads
 
 !
 !  Build the sphere(:) array (data_struct, internal-only -- never an f2py
@@ -57,11 +29,19 @@ end subroutine fastmm2_set_num_threads
 !  Shared by fastmm2_solve_fixed / fastmm2_solve_averaged /
 !  fastmm2_compute_tmatrix.
 !
-subroutine build_spheres(n, coords, radii, eps_r, eps_i, k, sphere, max_sph)
+!  truncation_formula: 0 = default (truncation_order, floor(ka+3*ka^(1/3))),
+!  1 = conservative (truncation_order2, larger order for a given ka --
+!  typically closer to Wiscombe, especially for small ka where near-field
+!  coupling of touching spheres needs more terms). A real, per-call
+!  argument (not module state, unlike before this file's GIL-release
+!  refactor) -- see fastmm2_solve_fixed's docstring for why that matters.
+!
+subroutine build_spheres(n, coords, radii, eps_r, eps_i, k, truncation_formula, sphere, max_sph)
     implicit none
     integer, intent(in) :: n
     real(dp), intent(in) :: coords(3,n), radii(n), eps_r(n), eps_i(n)
     complex(dp), intent(in) :: k
+    integer, intent(in) :: truncation_formula
     type(data_struct), allocatable, intent(out) :: sphere(:)
     integer, intent(out) :: max_sph
 
@@ -119,11 +99,12 @@ end subroutine build_spheres
 !  either solving or computing a T-matrix. Returns the cluster-level
 !  truncation order Nmax used by rhs2_xy/gmres_mlfmm2/inc_xy/mueller_matrix.
 !
-subroutine build_octree(sphere, k, formulation, acc, otree, nmax_cluster)
+subroutine build_octree(sphere, k, formulation, acc, truncation_formula, n_threads, otree, nmax_cluster)
     implicit none
     type(data_struct), dimension(:) :: sphere
     complex(dp), intent(in) :: k
     integer, intent(in) :: formulation, acc
+    integer, intent(in) :: truncation_formula, n_threads
     type(level_struct), dimension(:), allocatable, intent(out) :: otree
     integer, intent(out) :: nmax_cluster
 
@@ -134,7 +115,7 @@ subroutine build_octree(sphere, k, formulation, acc, otree, nmax_cluster)
 
     if (formulation /= 0) then
        call build_interpolation_matrix_mlfma2(otree)
-       call compute_translators_mlfma2(otree, k)
+       call compute_translators_mlfma2(otree, k, n_threads)
        call initialize_samples(otree, k)
     end if
 
@@ -172,12 +153,26 @@ end subroutine build_octree
 !
 subroutine fastmm2_solve_fixed(n, coords, radii, eps_r, eps_i, k_in, &
         N_theta, N_phi, formulation, acc, tol, restart, max_iter, &
+        truncation_formula, n_threads, &
         mueller, jones, cross_sections)
+    !f2py threadsafe
+    !
+    !  truncation_formula and n_threads are real, required, per-call
+    !  arguments -- not process-global state set via a separate pre-call
+    !  (as they used to be, via set_truncation_formula()/set_num_threads()).
+    !  That's what makes !f2py threadsafe safe here: two concurrent Python
+    !  threads calling this with different truncation_formula/n_threads no
+    !  longer race on shared mutable state, so releasing the GIL for the
+    !  duration of the call (letting genuinely concurrent Fortran execution
+    !  happen, like numpy/scipy's own C/Fortran-backed calls do) doesn't
+    !  risk cross-contaminating results between calls.
+    !
     implicit none
     integer, intent(in) :: n, N_theta, N_phi, formulation, acc, restart, max_iter
     real(dp), intent(in) :: coords(3,n), radii(n), eps_r(n), eps_i(n)
     complex(dp), intent(in) :: k_in
     real(dp), intent(in) :: tol
+    integer, intent(in) :: truncation_formula, n_threads
     real(dp), intent(out) :: mueller(N_phi*N_theta, 18)
     complex(dp), intent(out) :: jones(N_phi*N_theta, 6)
     real(dp), intent(out) :: cross_sections(5)
@@ -192,21 +187,21 @@ subroutine fastmm2_solve_fixed(n, coords, radii, eps_r, eps_i, k_in, &
 
     allocate(Tmat(0))
 
-    call build_spheres(n, coords, radii, eps_r, eps_i, k_in, sphere, max_sph)
-    call build_octree(sphere, k_in, formulation, acc, otree, nmax_cluster)
+    call build_spheres(n, coords, radii, eps_r, eps_i, k_in, truncation_formula, sphere, max_sph)
+    call build_octree(sphere, k_in, formulation, acc, truncation_formula, n_threads, otree, nmax_cluster)
 
-    call rhs2_xy(nmax_cluster, sphere, Tmat, b_vec, b_vec2, k_in)
+    call rhs2_xy(nmax_cluster, sphere, Tmat, b_vec, b_vec2, k_in, n_threads)
 
     allocate(xx(size(b_vec)))
     allocate(xx2(size(b_vec)))
 
-    call gmres_mlfmm2(sphere, otree, Tmat, k_in, b_vec, b_vec2, xx, xx2, tol, restart, max_iter)
+    call gmres_mlfmm2(sphere, otree, Tmat, k_in, b_vec, b_vec2, xx, xx2, tol, restart, max_iter, n_threads)
 
     deallocate(b_vec, b_vec2)
-    call inc_xy(nmax_cluster, sphere, b_vec, b_vec2, k_in)
+    call inc_xy(nmax_cluster, sphere, b_vec, b_vec2, k_in, n_threads)
 
     call mueller_matrix(sphere, xx, xx2, b_vec, b_vec2, k_in, N_theta, N_phi, &
-        nmax_cluster, S_out, J_out, cross_sections, 0.0_dp, 0.0_dp)
+        nmax_cluster, S_out, J_out, cross_sections, 0.0_dp, 0.0_dp, n_threads)
 
     mueller = S_out
     jones = J_out
@@ -224,13 +219,23 @@ end subroutine fastmm2_solve_fixed
 !
 subroutine fastmm2_solve_averaged(n, coords, radii, eps_r, eps_i, k_in, &
         N_theta, N_phi, N_ave, halton_init, formulation, acc, tol, restart, max_iter, &
+        truncation_formula, n_threads, &
         mueller, cross_sections)
+    !f2py threadsafe
+    !
+    !  truncation_formula only reaches build_spheres here -- orientation_ave
+    !  itself has never honored truncation_formula (it always uses
+    !  truncation_order(ka), unlike build_octree's fixed-orientation path;
+    !  see the comment at its Nmax = truncation_order(ka) line). Preserved
+    !  as-is, not fixed as a side effect of this refactor.
+    !
     implicit none
     integer, intent(in) :: n, N_theta, N_phi, N_ave, halton_init
     integer, intent(in) :: formulation, acc, restart, max_iter
     real(dp), intent(in) :: coords(3,n), radii(n), eps_r(n), eps_i(n)
     complex(dp), intent(in) :: k_in
     real(dp), intent(in) :: tol
+    integer, intent(in) :: truncation_formula, n_threads
     real(dp), intent(out) :: mueller(N_theta, 17)
     real(dp), intent(out) :: cross_sections(5)
 
@@ -241,10 +246,10 @@ subroutine fastmm2_solve_averaged(n, coords, radii, eps_r, eps_i, k_in, &
 
     allocate(Tmat(0))
 
-    call build_spheres(n, coords, radii, eps_r, eps_i, k_in, sphere, max_sph)
+    call build_spheres(n, coords, radii, eps_r, eps_i, k_in, truncation_formula, sphere, max_sph)
 
     call orientation_ave(sphere, Tmat, 0, k_in, N_phi, N_theta, N_ave, halton_init, &
-        S_ave, cross_sections, formulation, tol, restart, max_iter, acc)
+        S_ave, cross_sections, formulation, tol, restart, max_iter, acc, n_threads)
 
     mueller = S_ave
 end subroutine fastmm2_solve_averaged
@@ -274,12 +279,15 @@ end subroutine fastmm2_solve_averaged
 !
 subroutine fastmm2_compute_tmatrix(n, coords, radii, eps_r, eps_i, k_in, &
         T_order, nm, formulation, acc, tol, restart, max_iter, &
+        truncation_formula, n_threads, &
         Taa, Tab, Tba, Tbb)
+    !f2py threadsafe
     implicit none
     integer, intent(in) :: n, T_order, nm, formulation, acc, restart, max_iter
     real(dp), intent(in) :: coords(3,n), radii(n), eps_r(n), eps_i(n)
     complex(dp), intent(in) :: k_in
     real(dp), intent(in) :: tol
+    integer, intent(in) :: truncation_formula, n_threads
     complex(dp), intent(out) :: Taa(nm, nm)
     complex(dp), intent(out) :: Tab(nm, nm)
     complex(dp), intent(out) :: Tba(nm, nm)
@@ -292,10 +300,10 @@ subroutine fastmm2_compute_tmatrix(n, coords, radii, eps_r, eps_i, k_in, &
 
     allocate(Tmat(0))
 
-    call build_spheres(n, coords, radii, eps_r, eps_i, k_in, sphere, max_sph)
-    call build_octree(sphere, k_in, formulation, acc, otree, nmax_cluster)
+    call build_spheres(n, coords, radii, eps_r, eps_i, k_in, truncation_formula, sphere, max_sph)
+    call build_octree(sphere, k_in, formulation, acc, truncation_formula, n_threads, otree, nmax_cluster)
 
-    call compute_T_matrix(sphere, otree, Tmat, k_in, T_order, tol, restart, max_iter, &
+    call compute_T_matrix(sphere, otree, Tmat, k_in, T_order, tol, restart, max_iter, n_threads, &
         Taa, Tab, Tba, Tbb)
 end subroutine fastmm2_compute_tmatrix
 
