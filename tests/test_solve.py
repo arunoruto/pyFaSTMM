@@ -37,6 +37,18 @@ def test_resolve_n_threads_zero_raises():
         resolve_n_threads(0)
 
 
+def test_solve_rejects_nonpositive_or_nonfinite_radii():
+    """Non-positive/non-finite radii must be rejected in Python -- the
+    Fortran core doesn't validate and can hang (not crash) on a negative
+    radius, so this guard is load-bearing, not cosmetic."""
+    f = FaSTMM2()
+    coords = [[-1.5, 0.0, 0.0], [1.5, 0.0, 0.0]]
+    eps = [3.0 + 0.1j, 3.0 + 0.1j]
+    for bad_radii in ([1.0, -1.0], [0.0, 1.0], [1.0, float("nan")]):
+        with pytest.raises(ValueError, match="positive and finite"):
+            f.solve(coords, bad_radii, eps, k=1.2, N_theta=5, N_phi=1)
+
+
 def test_resolve_n_threads_float_fraction_of_cpu_count():
     """A float in (0, 1] is a *fraction* of cpu_count -- e.g. 0.5 (or the
     literal 1/2) means half the machine's CPUs, rounded. This is distinct

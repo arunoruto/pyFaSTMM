@@ -173,6 +173,12 @@ def _prepare_geometry(coords, radii, eps):
         raise ValueError(f"radii must have shape ({n},), got {radii.shape}")
     if eps.shape != (n,):
         raise ValueError(f"eps must have shape ({n},), got {eps.shape}")
+    # Guard before Fortran, which doesn't validate: a non-positive (or
+    # non-finite) radius can *hang* the Mie/truncation-order loops rather
+    # than error out -- discovered the hard way by a test feeding a
+    # negative radius to a solve that then never returned.
+    if not np.all(np.isfinite(radii)) or np.any(radii <= 0.0):
+        raise ValueError("radii must all be positive and finite")
 
     return n, coords_f, radii, np.real(eps).copy(), np.imag(eps).copy()
 
