@@ -2,6 +2,11 @@ project(
   'pyfastmm',
   'c',
   'fortran',
+  # Cosmetic only -- NOT the package version. meson-python takes the wheel/
+  # sdist version from pyproject.toml's [project] version (which python-
+  # semantic-release bumps at release time); nothing reads this field, and
+  # keeping it static avoids adding a third place for release tooling to
+  # patch.
   version: '0.1.0',
   meson_version: '>=1.1.0',
 )
@@ -213,6 +218,7 @@ python_sources = [
   'src' / 'pyfastmm' / '_cluster.py',
   'src' / 'pyfastmm' / '_config.py',
   'src' / 'pyfastmm' / '_dask.py',
+  'src' / 'pyfastmm' / '_results.py',
 ]
 
 py.install_sources(

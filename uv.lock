@@ -1313,13 +1313,13 @@ source = { editable = "." }
 dependencies = [
     { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
     { name = "numpy", version = "2.5.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
+    { name = "pydantic" },
 ]
 
 [package.optional-dependencies]
 dashboard = [
     { name = "pandas" },
     { name = "plotly" },
-    { name = "pydantic" },
     { name = "streamlit" },
 ]
 dask = [
@@ -1330,7 +1330,6 @@ dev = [
     { name = "meson" },
     { name = "meson-python" },
     { name = "ninja" },
-    { name = "pydantic" },
     { name = "pytest" },
     { name = "pytest-cov" },
 ]
@@ -1345,8 +1344,7 @@ requires-dist = [
     { name = "numpy", specifier = ">=1.25" },
     { name = "pandas", marker = "extra == 'dashboard'", specifier = ">=2.0" },
     { name = "plotly", marker = "extra == 'dashboard'", specifier = ">=5.0" },
-    { name = "pydantic", marker = "extra == 'dashboard'", specifier = ">=2.0" },
-    { name = "pydantic", marker = "extra == 'dev'", specifier = ">=2.0" },
+    { name = "pydantic", specifier = ">=2.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=7" },
     { name = "pytest-cov", marker = "extra == 'dev'" },
     { name = "streamlit", marker = "extra == 'dashboard'", specifier = ">=1.28" },

@@ -21,7 +21,12 @@ classifiers = [
   "Programming Language :: Python :: 3",
   "Programming Language :: Fortran",
 ]
-dependencies = ["numpy>=1.25"]
+# pydantic became a core dependency with the typed Results models
+# (pyfastmm._results, stored on FaSTMM.results) -- and SweepConfig
+# (pyfastmm._config) always needed it anyway; before this it only worked
+# with the dev/dashboard extras installed, which a plain wheel install
+# didn't get.
+dependencies = ["numpy>=1.25", "pydantic>=2.0"]
 
 [project.optional-dependencies]
 # meson/ninja/meson-python are here (not just build-system.requires)
@@ -30,8 +35,8 @@ dependencies = ["numpy>=1.25"]
 # in it. No separate `build` extra for python-semantic-release -- the
 # release runs entirely via the official PSR GitHub Action (see
 # .github/workflows/publish.yml), which bundles it.
-dev = ["pytest>=7", "pytest-cov", "meson>=1.1", "ninja", "meson-python>=0.15", "h5py>=3.0", "pydantic>=2.0"]
-dashboard = ["streamlit>=1.28", "pandas>=2.0", "plotly>=5.0", "pydantic>=2.0"]
+dev = ["pytest>=7", "pytest-cov", "meson>=1.1", "ninja", "meson-python>=0.15", "h5py>=3.0"]
+dashboard = ["streamlit>=1.28", "pandas>=2.0", "plotly>=5.0"]
 # Dask-distributed sweeps (SweepConfig.run_dask / pyfastmm._dask) --
 # first-class but strictly optional: the core package never imports dask,
 # so this extra is only needed to actually distribute. Deliberately NOT
@@ -48,6 +53,9 @@ Repository = "https://github.com/arunoruto/pyFaSTMM"
 exclude = [".venv"]
 venvPath = "."
 venv = ".venv"
+# meson-python's editable install is a custom import hook Pyright can't
+# see through -- resolve pyfastmm from the source tree directly instead.
+extraPaths = ["src"]
 
 [tool.semantic_release]
 version_variables = ["src/pyfastmm/__init__.py:__version__"]

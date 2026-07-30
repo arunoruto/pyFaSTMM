@@ -33,6 +33,7 @@ from pyfastmm._fastmm import (
     k_in_medium,
     medium_flux_norm,
 )
+from pyfastmm._results import SolveResult, TMatrixResult
 
 
 def rotate_for_incidence(coords, polar_deg, azimuthal_deg):
@@ -136,6 +137,27 @@ class FaSTMM:
         today; any other value raises ValueError at call time (not
         construction time -- see ``solve()``). Not the same thing as
         ``formulation`` (see module docstring).
+
+    Attributes
+    ----------
+    results : SolveResult | TMatrixResult | None
+        The most recent ``solve()``/``compute_tmatrix()`` outcome as a
+        validated pydantic model (see :mod:`pyfastmm._results` -- the
+        validation catches non-finite Mueller/Jones/T-matrix output
+        loudly at the source). ``None`` until the first call. The
+        methods also still *return* the plain-dict form
+        (``results.to_dict()``) for backward compatibility, so both
+        access styles work:
+
+        >>> f = FaSTMM(coords, radii, 1.5 + 0.01j)
+        >>> f.solve(0.55e-6)["c_ext"]      # dict style, unchanged
+        >>> f.results.c_ext                # attribute style, validated
+
+        Note: ``results`` holds the *last* call's outcome. Concurrent
+        ``solve()`` calls on one shared instance will race on it -- give
+        each thread its own FaSTMM (cheap: it holds only input arrays)
+        the way ``SweepConfig.run_resolved()`` does, and use the
+        per-call return values.
     """
 
     def __init__(
@@ -154,6 +176,7 @@ class FaSTMM:
         ).copy()
         self.medium_refractive_index = complex(medium_refractive_index)
         self.version = version
+        self.results: SolveResult | TMatrixResult | None = None
 
     def _eps_and_k(self, wavelength_vacuum):
         k_medium = k_in_medium(
@@ -285,7 +308,14 @@ class FaSTMM:
         result["c_ext_minus_c_abs"] *= flux_norm
         result["k_medium"] = k_medium
         result["eps"] = eps
-        return result
+        # Store the validated model on the instance (the class-driven
+        # access path); return the plain dict (the backward-compatible
+        # one). Validation happens here -- a non-finite Mueller/Jones
+        # raises now, at the source, instead of poisoning downstream
+        # analysis silently.
+        validated = SolveResult(wavelength_vacuum=float(wavelength_vacuum), **result)
+        self.results = validated
+        return validated.to_dict()
 
     def compute_tmatrix(
         self,
@@ -360,4 +390,7 @@ class FaSTMM:
         )
         result["k_medium"] = k_medium
         result["eps"] = eps
-        return result
+        # Same store-model / return-dict split as _solve_v2.
+        validated = TMatrixResult(wavelength_vacuum=float(wavelength_vacuum), **result)
+        self.results = validated
+        return validated.to_dict()
