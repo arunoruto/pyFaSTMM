@@ -70,6 +70,15 @@ def main():
         ldflags = f"{_driver_safe_ldflags(nix_ldflags)} {ldflags}"
     env["LDFLAGS"] = f"{env['LDFLAGS']} {ldflags}" if env.get("LDFLAGS") else ldflags
 
+    # Opt-in extra Fortran flags for *local* builds (e.g.
+    # PYFASTMM_F90FLAGS="-march=native"). Never set in CI/cibuildwheel --
+    # published wheels must stay portable across x86_64 machines; this is
+    # for tuning a build that only ever runs on the machine that built it.
+    # f2py's meson backend already builds buildtype=release (-O3), so
+    # there's nothing to gain by re-adding -O flags here.
+    extra_f90flags = os.environ.get("PYFASTMM_F90FLAGS", "").strip()
+    f90flags = f"-fopenmp {extra_f90flags}".strip()
+
     with tempfile.TemporaryDirectory() as scratch:
         cmd = [
             sys.executable,
@@ -82,7 +91,7 @@ def main():
             ":",
             "-m",
             "_fastmm_ext",
-            "--f90flags=-fopenmp",
+            f"--f90flags={f90flags}",
             "-lgomp",
             *link_flags,
         ]
