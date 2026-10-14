@@ -2,6 +2,85 @@
 
 <!-- version list -->
 
+## v1.1.0 (unreleased)
+
+Host media, a class-based API, threading control and sweeps, plus fixes to
+the bundled FaSTMM2 sources for absorbing hosts and touching small spheres.
+
+### Features
+
+- **Host medium support.** A (possibly absorbing) host medium is modelled
+  by solving with the relative permittivity `(n_particle / n_host)**2` and
+  the complex wavenumber in the host. `FaSTMM2.solve()`/`compute_tmatrix()`
+  accept a complex `k`; `eps_relative_to_medium()`, `k_in_medium()` and
+  `eps_from_index()` are public helpers. The `[medium]` table of a sweep
+  config is now honoured (1.0.0 ignored it with a warning), with fixed or
+  file-interpolated `n, k` for particles and medium alike.
+- **Cross-section convention, physical by default.** In a host medium the
+  cross sections are power per unit incident irradiance in the host: a
+  single sphere equals Mie theory with `m / n_host` and the size parameter
+  in the host, and a large absorbing sphere has `Q_ext -> 2`. The new
+  `cross_section_convention="mstm"` (on `FaSTMM.solve()` and in
+  `[solver]`) returns MSTM's medium-mode values instead, normalised by the
+  vacuum irradiance, i.e. multiplied by `Re(n_host)` (`medium_flux_norm()`).
+  Both conventions agree in vacuum.
+- **`FaSTMM` class**: takes vacuum-referenced refractive indices, a host
+  medium and a vacuum wavelength, applies the medium transform and the
+  incidence rotation (`incident_polar_deg`, `incident_azimuthal_deg`), and
+  stores a validated result on `FaSTMM.results` (`SolveResult`,
+  `TMatrixResult`; non-finite Mueller/Jones/T-matrix output raises). Also
+  `rotate_for_incidence()` and `radiative_transfer_phase_function()`.
+- **Threading.** The solver releases the GIL and holds no process-global
+  state, so concurrent solves from Python threads are safe and run in
+  parallel. `n_threads` sets the OpenMP thread count per call (a count, a
+  negative offset from `os.cpu_count()`, or a float fraction of it).
+  **`n_threads` now defaults to 1**; 1.0.0 used all OpenMP cores.
+- **Sweeps.** `SweepConfig`/`load_config()` (now exported from `pyfastmm`)
+  run wavelength sweeps from TOML; `solver.sweep_threads` solves several
+  wavelengths concurrently; `resolve_inputs()` + `run_resolved()` separate
+  file I/O from solving. New `[solver]` fields: `truncation_formula`,
+  `truncation_order`, `cross_section_convention`, `n_threads`,
+  `sweep_threads`.
+- **Dask** (optional, `pip install "pyfastmm[dask]"`):
+  `SweepConfig.run_dask()` and `run_resolved_dask()` distribute a sweep
+  with one task per wavelength.
+- **Truncation control.** `truncation_formula=1` selects FaSTMM2's more
+  conservative order formula; `truncation_order=N` sets an explicit
+  per-sphere expansion order (N >= 2), for convergence studies of
+  touching spheres at small size parameters.
+
+### Bug fixes
+
+- **All-NaN Mueller/Jones matrices in absorbing host media.** Upstream
+  evaluated the far field at `RR = 1e6 * Re(k)`, a distance at which
+  `exp(ikR)` underflows to zero for any absorbing host. Now
+  `RR = 1e6 / Re(k)` (capped for strong absorption).
+- **`c_sca` in absorbing host media.** The
+  far-field integral did not divide out the propagator's attenuation
+  `exp(-2 Im(k) RR)`, suppressing `c_sca` by up to ~1e-260. Now
+  `c_sca == c_ext - c_abs` in a lossless host, to quadrature accuracy.
+- **Touching spheres at small size parameters.** The one-centre GMRES
+  system is numerically singular there (rcond ~1e-60), so the result
+  depended on the iteration path and broke rotational invariance (up to
+  12% for a rotated touching pair). GMRES now iterates the
+  Jacobi-balanced system, an exact similarity transform. T-matrix
+  elements now differ from the unpatched upstream CLI at the GMRES
+  tolerance level (~1e-8).
+- **Incident-angle rotation order** for sweeps with both polar and
+  azimuthal angles nonzero (`R = Ry @ Rz`; the old order was up to 1.3%
+  off against MSTM).
+- Non-positive or non-finite radii raise `ValueError` instead of hanging
+  the Fortran code.
+
+### Build and packaging
+
+- LAPACK/BLAS link flags come from `pkg-config`, so building from the
+  sdist needs gfortran, LAPACK/BLAS and pkg-config.
+- Licence texts for the FaSTMM2 sources and for the libraries bundled in
+  the wheels are shipped in `LICENSES/`; `CITATION.cff` added.
+- `pyfastmm.__version__` is read from the installed metadata; the
+  checkout-only `pyfastmm._build` module was removed.
+
 ## v1.0.0 (2026-07-14)
 
 - Initial Release
