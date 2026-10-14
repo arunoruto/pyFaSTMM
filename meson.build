@@ -66,9 +66,8 @@ gaussquad_patched = custom_target(
 # catastrophic: real(k) for optical wavelengths is ~1e7 rad/m, so RR ends
 # up ~1e13 m (tens of AU). At that distance `exp(i*k*RR)` underflows to
 # exact complex zero for *any* absorbing medium (any nonzero Im(k), i.e.
-# any medium.refractive_index with nonzero k) -- which is exactly this
-# project's regime (an olivine/silicate host). The resulting division by
-# an exact zero produces an all-NaN Mueller/Jones matrix (S_out columns
+# any medium.refractive_index with nonzero k), e.g. a silicate host. The
+# resulting division by an exact zero produces an all-NaN Mueller/Jones matrix (S_out columns
 # 3-18) while cross sections stay finite, since cross_sections()/
 # sphere_absorbtion2() use the T-matrix coefficients directly and never
 # evaluate the field at RR. Fixed to `RR = 1.0d6 / real(k)` (~1e5-1e6
@@ -153,7 +152,6 @@ orientation_averaging_patched = custom_target(
 # S^-1 (I - T A) S with S = diag(sqrt|t_n|) instead -- the same device
 # MSTM uses -- which is an exact similarity transform (identical solution
 # in exact arithmetic) with bounded conditioning.
-# See TODO-AI.md section 2.6 for the full diagnosis.
 solver_scaled_patched = custom_target(
   'solver-scaled-patched',
   input: [
@@ -238,7 +236,6 @@ fastmm_ext = custom_target(
 
 python_sources = [
   'src' / 'pyfastmm' / '__init__.py',
-  'src' / 'pyfastmm' / '_build.py',
   'src' / 'pyfastmm' / '_fastmm.py',
   'src' / 'pyfastmm' / '_cluster.py',
   'src' / 'pyfastmm' / '_config.py',
