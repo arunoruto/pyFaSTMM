@@ -211,11 +211,13 @@ class FaSTMM:
         Returns the same dict ``FaSTMM2.solve()`` does (``mueller``,
         ``jones`` when ``N_ave==0``, ``c_ext``, ``c_abs``,
         ``c_ext_minus_c_abs``, ``c_sca``, ``asymmetry``), with
-        ``c_ext``/``c_abs``/``c_ext_minus_c_abs`` already corrected for
-        the host medium's incident-flux normalization (see
-        ``medium_flux_norm()``) -- deliberately *not* applied to ``c_sca``
-        (the far-field-integrated value), which has its own, separate
-        reliability problem in the deep-Rayleigh regime. Also adds
+        ``c_ext``/``c_abs``/``c_ext_minus_c_abs``/``c_sca`` already
+        corrected for the host medium's incident-flux normalization (see
+        ``medium_flux_norm()``; ``c_sca`` was excluded historically, but
+        with the far-field attenuation fix in
+        ``mie-far-field-distance-fix.patch`` the raw far-field ``c_sca``
+        provably equals the raw ``c_ext - c_abs`` for a lossless medium,
+        so it needs the identical factor to stay consistent). Also adds
         ``"k_medium"`` (the complex wavenumber actually used) and
         ``"eps"`` (the per-particle permittivity actually used), mainly
         so ``radiative_transfer_phase_function()`` can use them without
@@ -306,6 +308,7 @@ class FaSTMM:
         result["c_ext"] *= flux_norm
         result["c_abs"] *= flux_norm
         result["c_ext_minus_c_abs"] *= flux_norm
+        result["c_sca"] *= flux_norm
         result["k_medium"] = k_medium
         result["eps"] = eps
         # Store the validated model on the instance (the class-driven

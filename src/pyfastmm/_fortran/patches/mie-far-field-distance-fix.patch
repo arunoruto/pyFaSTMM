@@ -27,3 +27,27 @@
  kr = k * RR
  
  Cext = 0.0
+@@ -1489,12 +1498,19 @@
+       F = E_out(:,las)
+       F = sph2cart_vec(theta, phi, F)     
+       E_out(:,las) = F
+-      
+-      Csca_int = Csca_int + pi/2.0*4.0*pi*RR**2 * &
++
++      ! E_out carries the far-field propagator exp(i*k*RR)/(k*RR); for
++      ! complex k (absorbing host medium) its magnitude decays as
++      ! exp(-aimag(k)*RR), which the real RR**2 factor below does not
++      ! cancel. Divide that attenuation back out, the same way
++      ! mueller_matrix's full complex k*RR/exp(i*k*RR) prefactor does.
++      ! Exact no-op for real k; the RR cap above bounds the exponent
++      ! at 600 < log(huge(1d0)), so the exp() cannot overflow.
++      Csca_int = Csca_int + pi/2.0*4.0*pi*RR**2 * exp(2.0d0*aimag(k)*RR) * &
+            dot_product(E_out(:,las),E_out(:,las)) * &
+-           sin(theta)/dble(N_phi)/dble(N_theta-1) 
++           sin(theta)/dble(N_phi)/dble(N_theta-1)
+ 
+-      q = q + pi/2.0*4.0*pi*RR**2 * &
++      q = q + pi/2.0*4.0*pi*RR**2 * exp(2.0d0*aimag(k)*RR) * &
+            dot_product(E_out(:,las),E_out(:,las)) * &
+            sin(theta)/dble(N_phi)/dble(N_theta-1) * cos(theta)
+            las = las + 1

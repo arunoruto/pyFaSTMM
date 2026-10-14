@@ -57,10 +57,10 @@ def test_medium_flux_normalization_matches_raw_solve_times_re_n_medium():
     assert result["c_ext_minus_c_abs"] == pytest.approx(
         raw["c_ext_minus_c_abs"] * n_medium.real
     )
-    # c_sca (far-field) is NOT corrected -- must equal the raw value
-    # (modulo floating-point noise from e.g. OpenMP reduction order
-    # differing between separately-run solves).
-    assert result["c_sca"] == pytest.approx(raw["c_sca"])
+    # c_sca (far-field) gets the same correction since the propagator
+    # attenuation fix: raw c_sca == raw (c_ext - c_abs) for a lossless
+    # medium, so energy conservation forces the identical factor.
+    assert result["c_sca"] == pytest.approx(raw["c_sca"] * n_medium.real)
 
 
 def test_medium_correction_is_a_no_op_for_vacuum():
@@ -193,3 +193,75 @@ def test_all_v2_formulations_are_accepted():
     for formulation in (0, 1, 2):
         result = fastmm.solve(2 * np.pi, N_theta=11, N_phi=1, formulation=formulation)
         assert result["c_ext"] > 0
+
+
+def test_absorbing_medium_c_sca_survives_propagator_attenuation():
+    """Regression for the far-field attenuation bug (TODO-AI.md section 2.6):
+    compute_cluster_fields_far integrated RR**2 * |E|**2 without dividing
+    out the propagator's exp(-2*Im(k)*RR) decay, so an absorbing host
+    medium suppressed c_sca by exp(-2e6*kappa/n) -- ~2e-7 for kappa=1e-5
+    here, saturating at exp(-600) ~ 1e-260 once the RR cap engages (the
+    exact ~10^260.8 factor measured in the space-weathering campaign).
+    A weakly absorbing host must now give essentially the lossless-host
+    c_sca; the tiny residual drift is the genuine physics of the medium."""
+    coords = [[0.0, 0.0, 0.0]]
+    radii = [1.0]
+    n_particle = 1.5 + 0.01j
+
+    def solve_c_sca(n_medium):
+        fastmm = FaSTMM(
+            coords, radii, refractive_index=n_particle,
+            medium_refractive_index=n_medium,
+        )
+        return fastmm.solve(wavelength_vacuum=5.0, N_theta=19, N_phi=1)["c_sca"]
+
+    lossless = solve_c_sca(1.3 + 0.0j)
+    assert lossless > 0.0
+    # kappa/n ~ 7.7e-6: below the RR-cap threshold (uncapped branch)
+    assert solve_c_sca(1.3 + 1e-5j) == pytest.approx(lossless, rel=0.01)
+    # kappa/n ~ 7.7e-4: RR cap engaged (pre-fix: c_sca ~ 1e-260 * true)
+    assert solve_c_sca(1.3 + 1e-3j) == pytest.approx(lossless, rel=0.02)
+
+
+def test_touching_pair_rotational_invariance_deep_rayleigh():
+    """Regression for the deep-Rayleigh conditioning bug (TODO-AI.md
+    section 2.6, item 2): the unscaled GMRES system for touching spheres at
+    size parameter x << 1 is numerically singular in double precision
+    (measured rcond ~ 1e-60 at Nmax=13, x ~ 0.04), so the "converged"
+    solution -- and every cross section derived from it -- depended on the
+    solver's iteration path: unpolarized c_ext for physically identical
+    touching pairs oriented along x vs y differed by 3-12% across the
+    wavelength grid. With the Jacobi-balanced solve
+    (solver-deep-rayleigh-gmres-scaling.patch) results are
+    orientation-independent; measured spread is ~1e-6 relative."""
+    n_fe = 3.985 + 9.471j          # iron at 2976nm (Querry)
+    n_med = 1.830993 + 0.001069j   # olivine host (Fabian 2001)
+    lam = 2.9762e-6
+    r = 10e-9
+    s = r / np.sqrt(2.0)
+    res = {}
+    for tag, coords in {
+        "x": [[-r, 0.0, 0.0], [r, 0.0, 0.0]],
+        "y": [[0.0, -r, 0.0], [0.0, r, 0.0]],
+        "diag": [[-s, -s, 0.0], [s, s, 0.0]],
+    }.items():
+        fastmm = FaSTMM(coords, [r, r], refractive_index=n_fe,
+                        medium_refractive_index=n_med)
+        res[tag] = fastmm.solve(lam, N_theta=31, N_phi=8, formulation=0,
+                                tol=1e-8, truncation_formula=1)["c_ext"]
+    assert res["y"] == pytest.approx(res["x"], rel=1e-4)
+    assert res["diag"] == pytest.approx(res["x"], rel=1e-4)
+
+
+def test_c_sca_equals_c_ext_minus_c_abs_in_lossless_medium():
+    """Energy-conservation anchor: with the attenuation fix AND c_sca now
+    included in medium_flux_norm, the far-field-integrated c_sca must match
+    the optical-theorem c_ext - c_abs for an absorbing particle in a
+    lossless medium, limited only by angular quadrature (~5e-4 at this
+    grid; 23% off before c_sca joined the flux normalization)."""
+    fastmm = FaSTMM(
+        [[0.0, 0.0, 0.0]], [1.0], refractive_index=1.5 + 0.01j,
+        medium_refractive_index=1.3 + 0.0j,
+    )
+    result = fastmm.solve(wavelength_vacuum=5.0, N_theta=61, N_phi=8)
+    assert result["c_sca"] == pytest.approx(result["c_ext_minus_c_abs"], rel=0.01)

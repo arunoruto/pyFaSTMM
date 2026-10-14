@@ -64,12 +64,23 @@ chained on top of `mie-far-field-distance-fix.patch`'s output rather than merged
   comments. Comment-only rewrite.
 - `mie-far-field-distance-fix` — upstream's far-field radius `RR = 1.0d6 * real(k)` is dimensionally wrong;
   for absorbing media `exp(i*k*RR)` underflows to exact zero and the whole Mueller/Jones matrix comes back NaN
-  while cross sections stay finite. Fixed to `RR = 1.0d6 / real(k)`.
+  while cross sections stay finite. Fixed to `RR = 1.0d6 / real(k)`. Also multiplies the far-field `Csca`/`q`
+  integrands by `exp(+2*aimag(k)*RR)`: for complex k the propagator's `exp(-Im(k)*RR)` decay isn't cancelled by
+  the real `RR**2` factor (Mueller/Jones divide out the full complex exponential; the Csca integral didn't),
+  which suppressed `c_sca` by up to e^-600 ≈ 1e-260 in absorbing media. No-op for real k.
 - `*-n-threads-threading` (solver, matvec_adaptive, T_matrix, orientation_averaging, mie) — thread `n_threads`
   (and `truncation_formula`) explicitly through every reachable `!$omp parallel` region, replacing the
   `omp_set_num_threads()` / module-global state upstream relied on. **This is what makes `!f2py threadsafe`
   (GIL release) on the three wrapper entry points correct**; without it, two Python threads racing to set
   different values would silently corrupt each other's physics.
+- `solver-deep-rayleigh-gmres-scaling` — chained on `solver-n-threads-threading`'s output. In the
+  deep-Rayleigh regime (x ≪ 1, touching spheres) the raw one-center system is numerically singular in double
+  precision (measured rcond ~1e-60 at Nmax=13, x≈0.03): any solver's "converged" answer then depends on its
+  iteration path, which broke rotational invariance (identical touching pairs along x vs y differed by up to
+  12%) and made cross sections solver-path artifacts. GMRES now iterates the Jacobi-balanced similarity
+  transform `S⁻¹(I−TA)S`, `S = diag(√|t_n|)` — exact in exact arithmetic, bounded conditioning (same device
+  MSTM uses). Side effect: T-matrix elements no longer match the unpatched CLI bit-for-bit (only to GMRES
+  iteration noise, ~1e-8 abs) — test_compatibility.py's T-matrix atol reflects that.
 
 Anything that would reintroduce process-global Fortran state breaks concurrency; `tests/test_concurrency.py`
 guards this by comparing threaded results against the same calls run serially.
@@ -106,7 +117,8 @@ Three layers, each building on the one below — put shared physics logic at the
 - FaSTMM2 has no medium input and no incident-angle input. A host medium is emulated by transforming both `eps`
   and `k`; a tilted beam is emulated by **rotating the cluster** (`R = Ry @ Rz` — the other order was measured
   ~1.3% off against MSTM when both angles are nonzero).
-- `medium_flux_norm` applies to `c_ext`/`c_abs`/`c_ext_minus_c_abs` but deliberately **not** to `c_sca`.
+- `medium_flux_norm` applies to all four cross sections, `c_sca` included (since the far-field attenuation
+  fix: raw `c_sca` == raw `c_ext - c_abs` for lossless media, so consistency forces the same factor).
 - `n_threads` defaults to **1**, not "all cores", at every layer — callers commonly run sweeps under their own
   process parallelism and would otherwise oversubscribe. It accepts a positive int (absolute), a float in
   `(0, 1]` (fraction of `cpu_count`), or a negative value (offset from `cpu_count`); `0` raises.
