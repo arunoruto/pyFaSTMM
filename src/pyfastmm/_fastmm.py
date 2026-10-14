@@ -148,10 +148,13 @@ def medium_flux_norm(n_medium):
     ~46% off without this factor, <0.03% with it, for single sphere,
     touching pair, 4-chain, and a real 32-sphere fractal aggregate.
 
-    Deliberately *not* applicable to the far-field-integrated ``c_sca``
-    (from ``compute_cluster_fields_far``) -- that value has its own,
-    separate reliability problem in the deep-Rayleigh regime, unrelated to
-    and not addressed by this correction (see space-weathering's PLAN.md).
+    Applies to the far-field-integrated ``c_sca`` as well (since
+    2026-08-01): with the propagator-attenuation fix in
+    ``mie-far-field-distance-fix.patch``, the raw far-field ``c_sca``
+    equals the raw ``c_ext - c_abs`` to ~5e-5 (angular quadrature) for a
+    lossless medium, so energy conservation forces the same factor on all
+    four cross sections. (It was excluded historically, while the raw
+    value was broken in absorbing media -- see TODO-AI.md section 2.6.)
     With a vacuum medium this returns exactly ``1.0`` (a no-op).
     """
     return complex(n_medium).real
@@ -255,7 +258,13 @@ class FaSTMM2:
             ``truncation_order2``, a more conservative formula that gives
             larger expansion orders, especially for small ``ka`` where the
             default can under-resolve near-field coupling of touching
-            spheres. ``None`` (default) resolves to 0. A real, per-call
+            spheres; any value >= 2 -- used directly as an explicit
+            per-sphere expansion order (touching deep-Rayleigh clusters
+            converge slowly in order, so ka-based formulas cannot express
+            the required order -- see TODO-AI.md section 2.6; measured
+            useful up to ~20, beyond which the translation arithmetic
+            itself starts losing precision at very small ka).
+            ``None`` (default) resolves to 0. A real, per-call
             argument passed straight through to the Fortran extension
             (not global/process state -- see ``!f2py threadsafe`` on the
             wrapped subroutines), so concurrent calls with different

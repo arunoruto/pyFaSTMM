@@ -32,9 +32,13 @@ contains
 !  truncation_formula: 0 = default (truncation_order, floor(ka+3*ka^(1/3))),
 !  1 = conservative (truncation_order2, larger order for a given ka --
 !  typically closer to Wiscombe, especially for small ka where near-field
-!  coupling of touching spheres needs more terms). A real, per-call
-!  argument (not module state, unlike before this file's GIL-release
-!  refactor) -- see fastmm2_solve_fixed's docstring for why that matters.
+!  coupling of touching spheres needs more terms), >= 2 = use the value
+!  itself as an explicit per-sphere order (convergence studies; touching
+!  deep-Rayleigh clusters converge slowly in order and the ka-based
+!  formulas have no handle on that -- see TODO-AI.md section 2.6).
+!  A real, per-call argument (not module state, unlike before this
+!  file's GIL-release refactor) -- see fastmm2_solve_fixed's docstring
+!  for why that matters.
 !
 subroutine build_spheres(n, coords, radii, eps_r, eps_i, k, truncation_formula, sphere, max_sph)
     implicit none
@@ -79,7 +83,13 @@ subroutine build_spheres(n, coords, radii, eps_r, eps_i, k, truncation_formula, 
        sphere(sph)%eps_r = dcmplx(eps_r(sph), eps_i(sph))
 
        ka = real(k) * radii(sph)
-       if (truncation_formula == 1) then
+       if (truncation_formula >= 2) then
+          ! Explicit per-sphere truncation order: ka-based formulas
+          ! under-truncate badly for touching spheres in the deep-Rayleigh
+          ! regime, where the near-field coupling (not the size parameter)
+          ! sets the required multipole order -- see TODO-AI.md section 2.6.
+          sphere(sph)%Nmax = truncation_formula
+       else if (truncation_formula == 1) then
           sphere(sph)%Nmax = truncation_order2(ka)
        else
           sphere(sph)%Nmax = truncation_order(ka)
@@ -120,7 +130,12 @@ subroutine build_octree(sphere, k, formulation, acc, truncation_formula, n_threa
     end if
 
     ka = dble(k)*sqrt(3.0d0)/2.0d0 * otree(1)%tree(1)%dl
-    if (truncation_formula == 1) then
+    if (truncation_formula >= 2) then
+       ! Explicit override (see build_spheres): the cluster-level order
+       ! must be at least the per-sphere order or the outgoing expansion
+       ! truncates what the spheres carry.
+       nmax_cluster = max(truncation_order(ka), truncation_formula)
+    else if (truncation_formula == 1) then
        nmax_cluster = truncation_order2(ka)
     else
        nmax_cluster = truncation_order(ka)
