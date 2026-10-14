@@ -25,6 +25,7 @@ __pycache__/
 build/
 develop-eggs/
 dist/
+wheelhouse/
 downloads/
 eggs/
 .eggs/
@@ -301,3 +302,6 @@ vcpkg_installed/
 # test output & cache
 Testing/
 .cache/
+
+# Private notes, never published
+TODO-AI.md

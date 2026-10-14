@@ -15,10 +15,12 @@ FaSTMM2-specific fields just fall back to their own defaults if absent.
 
 Two physical differences from MSTM worth knowing:
 
-- FaSTMM2 has no background-medium refractive index -- the surrounding
-  medium is always assumed to be vacuum (n=1). A non-trivial
-  ``[medium]`` in the config is accepted (for config-file compatibility)
-  but ignored, with a warning.
+- FaSTMM2 supports a (possibly absorbing) background medium since
+  v1.1 -- the ``[medium].refractive_index`` is used to compute the
+  effective wavenumber ``k = 2*pi * n_medium / wavelength_vac`` and
+  particle permittivity contrast ``eps_eff = (n_particle / n_medium)**2``.
+  A complex ``refractive_index`` (n, k) on the medium leads to complex
+  wavenumber ``k`` and, therefore, an absorbing (lossy) host.
 - FaSTMM2 always illuminates along +z; there is no direct incident-beam-
   angle control like MSTM's ``incident_alpha_deg``/``incident_beta_deg``.
   ``[incident]`` is honored by rotating the cluster geometry the
@@ -33,6 +35,9 @@ Example
     positions_file = "cluster.dat"
     scale = 1e-9
     refractive_index = [1.5, 0.01]
+
+    [medium]
+    refractive_index_file = "nk_host.csv"
 
     [wavelengths]
     start = 0.4
@@ -50,20 +55,60 @@ from __future__ import annotations
 import os
 import tomllib
 import warnings
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal, cast
 
 import numpy as np
 from pydantic import BaseModel, Field, model_validator
 
-from pyfastmm._fastmm import FaSTMM2
+from pyfastmm._cluster import FaSTMM
+from pyfastmm._fastmm import resolve_n_threads
 
 # ---------------------------------------------------------------------------
 # Pydantic models
 # ---------------------------------------------------------------------------
 
 
-class ParticlesConfig(BaseModel):
+def _resolve_path(base_dir: str | os.PathLike[str], filepath: str) -> Path:
+    p = Path(filepath)
+    if p.is_absolute():
+        return p
+    return Path(base_dir) / p
+
+
+class _RefractiveIndexSpec(BaseModel):
+    """Shared ``refractive_index``/``refractive_index_file`` handling used
+    by both :class:`ParticlesConfig` and :class:`MediumConfig`."""
+
+    refractive_index: tuple[float, float] = (1.0, 0.0)
+    refractive_index_file: str | None = None
+
+    def get_nk(
+        self,
+        wavelengths_raw: np.ndarray,
+        base_dir: str | os.PathLike[str] = "",
+    ) -> np.ndarray:
+        """Complex refractive index ``n + i*k`` at each wavelength.
+
+        If *refractive_index_file* is set, loads the file
+        (whitespace-delimited columns ``wavelength  n  k``, same units as
+        the ``[wavelengths]`` config before *scale*) and linearly
+        interpolates onto the requested wavelengths.  Otherwise broadcasts
+        *refractive_index* as a fixed (wavelength-independent) value.
+        """
+        if self.refractive_index_file:
+            path = _resolve_path(base_dir, self.refractive_index_file)
+            data = np.loadtxt(str(path))
+            n_interp = np.interp(wavelengths_raw, data[:, 0], data[:, 1])
+            k_interp = np.interp(wavelengths_raw, data[:, 0], data[:, 2])
+            return n_interp + 1j * k_interp
+        n_re, n_im = self.refractive_index
+        return np.full_like(wavelengths_raw, complex(n_re, n_im), dtype=complex)
+
+
+class ParticlesConfig(_RefractiveIndexSpec):
     """Particle cluster specification (same shape as pyMSTM's)."""
 
     positions_file: str = ""
@@ -80,7 +125,7 @@ class ParticlesConfig(BaseModel):
         *gap_factor* stretches positions (not radii) to separate touching
         spheres.
         """
-        path = self._resolve(base_dir)
+        path = _resolve_path(base_dir, self.positions_file)
         suffix = Path(path).suffix.lower()
         if suffix == ".csv":
             data = np.loadtxt(str(path), delimiter=",")
@@ -97,12 +142,6 @@ class ParticlesConfig(BaseModel):
         """Electric permittivity (eps = m**2) from the refractive index."""
         n_re, n_im = self.refractive_index
         return complex(n_re, n_im) ** 2
-
-    def _resolve(self, base_dir: str | os.PathLike[str]) -> Path:
-        p = Path(self.positions_file)
-        if p.is_absolute():
-            return p
-        return Path(base_dir) / p
 
 
 class WavelengthsConfig(BaseModel):
@@ -142,11 +181,11 @@ class WavelengthsConfig(BaseModel):
         return 2.0 * np.pi / self.get_wavelengths_m()
 
 
-class MediumConfig(BaseModel):
-    """Surrounding medium. FaSTMM2 assumes vacuum (n=1) -- see module
-    docstring; a non-trivial value here is accepted but ignored."""
-
-    refractive_index: tuple[float, float] = (1.0, 0.0)
+class MediumConfig(_RefractiveIndexSpec):
+    """Surrounding medium. FaSTMM2 uses the medium refractive index to
+    compute the effective wavenumber ``k = 2*pi * n_medium / wavelength_vac``
+    and particle permittivity contrast ``eps_eff = (n_particle / n_medium)**2``,
+    fully supporting (possibly absorbing) background media since v1.1."""
 
 
 class IncidentConfig(BaseModel):
@@ -168,14 +207,22 @@ class IncidentConfig(BaseModel):
         theta = np.radians(self.polar_angle_deg)
         phi = np.radians(self.azimuthal_angle_deg)
 
-        # Rotate the cluster by -theta about the (rotated) y-axis and then
-        # -phi about z, the inverse of tilting the beam by (theta, phi) --
-        # equivalent because only the relative orientation matters.
+        # Rotate the cluster by -phi about z first, then -theta about the
+        # (rotated) y-axis (R = Ry @ Rz, Rz innermost/applied first) -- the
+        # inverse of tilting the beam by (theta, phi) via
+        # k_hat = Rz(alpha).Ry(beta).z_hat, MSTM's own incident-wave
+        # convention (mstm-input-37.f90; theta=beta=polar, phi=alpha=
+        # azimuthal). Order matters here: for a single nonzero angle any
+        # order agrees (trivial composition), but with both angles nonzero
+        # simultaneously the *other* order (R = Rz @ Ry) was empirically
+        # found to disagree with MSTM by up to ~1.3% (cross-tool validation
+        # -- this function used to have that bug) while this one matches to
+        # <0.0002%.
         cos_t, sin_t = np.cos(-theta), np.sin(-theta)
         Ry = np.array([[cos_t, 0, sin_t], [0, 1, 0], [-sin_t, 0, cos_t]])
         cos_p, sin_p = np.cos(-phi), np.sin(-phi)
         Rz = np.array([[cos_p, -sin_p, 0], [sin_p, cos_p, 0], [0, 0, 1]])
-        R = Rz @ Ry
+        R = Ry @ Rz
 
         out = positions.copy()
         out[:, :3] = positions[:, :3] @ R.T
@@ -194,6 +241,57 @@ class SolverConfig(BaseModel):
     N_phi: int = 32
     N_ave: int = 0  # 0 = fixed orientation
     halton_init: int = 0
+    truncation_formula: Literal[0, 1] = 0
+    """Per-sphere Mie truncation formula (see FaSTMM2.solve()'s docstring).
+    0 (default): floor(ka + 3*ka**(1/3)), min 6. 1: the more conservative
+    formula -- needed for touching, small-ka, high-refractive-index-contrast
+    clusters (e.g. nanometer-scale metal monomers), where formula 0
+    under-resolves near-field coupling and under-converges Cext by
+    double-digit percentages."""
+    truncation_order: int | None = Field(default=None, ge=2)
+    """Explicit per-sphere expansion order; overrides truncation_formula
+    when set (see FaSTMM2.solve())."""
+    cross_section_convention: Literal["physical", "mstm"] = "physical"
+    """Cross-section normalisation in a host medium (see FaSTMM.solve()):
+    "physical" (default) is per unit irradiance in the host; "mstm" is
+    MSTM's medium mode, Re(n_host) times larger."""
+    n_threads: int | float = 1
+    """OpenMP thread count for the GMRES matvec/solver/far-field hot paths
+    (see FaSTMM.solve()'s docstring for measured scaling and why 1, not
+    "all cores", is the default -- this matters especially for a sweep
+    over many wavelengths/clusters run under its own process-level
+    parallelism, where workers * n_threads can oversubscribe the machine
+    if this isn't kept conservative). May be negative, meaning an offset
+    from os.cpu_count() -- see resolve_n_threads().
+
+    ``0`` is reserved as a sentinel for orchestrators, not a valid value
+    here: resolve_n_threads() rejects it, so any solve attempted with 0
+    raises. An orchestrator may use 0 in its TOML to mean "resolve per
+    worker at runtime" and replace it with a real count before
+    run_resolved() executes (the right per-worker count depends on how
+    workers are provisioned, which the orchestrator knows and this
+    library doesn't). pyfastmm's only accommodation is skipping its
+    oversubscription warning for 0."""
+    sweep_threads: int | float = 1
+    """Number of *wavelengths* solved concurrently by run_resolved(), via a
+    Python thread pool. Real concurrency, not GIL-serialized: the Fortran
+    entry points release the GIL (`!f2py threadsafe`) and hold no process-
+    global state, so independent solves genuinely overlap in one process --
+    sharing memory, with none of multiprocessing's pickling/spawn cost.
+    This is a *different axis* than n_threads (OpenMP threads *inside* one
+    solve): total CPU pressure is roughly sweep_threads * n_threads, and
+    run_resolved() warns if that product exceeds os.cpu_count(). For many
+    wavelengths of a modest cluster, prefer raising sweep_threads over
+    n_threads -- independent solves scale perfectly, while OpenMP-inside-
+    one-solve was measured to fall off past ~8 threads (see
+    FaSTMM2.solve()'s docstring). Defaults to 1 (serial, the pre-existing
+    behavior) for the same reason n_threads does: a caller running many
+    sweeps under its own process-level parallelism (e.g. a Dask worker
+    with multiple task slots) must not be silently
+    oversubscribed by a nested pool it didn't ask for. Accepts the same
+    shapes as n_threads: positive int (absolute), negative (offset from
+    os.cpu_count()), float in (0, 1] (fraction of it) -- see
+    resolve_n_threads()."""
 
 
 class OutputConfig(BaseModel):
@@ -201,6 +299,29 @@ class OutputConfig(BaseModel):
 
     compute_tmatrix: bool = False
     t_order: int = 16
+
+
+@dataclass
+class ResolvedSweepInputs:
+    """Everything :meth:`SweepConfig.run_resolved` needs, with all file I/O
+    already done -- plain arrays and pydantic sub-configs, no filesystem
+    dependency. This is the seam a distributed worker (e.g. a Dask task)
+    should see: :meth:`SweepConfig.resolve_inputs` does all the file
+    reading on whichever machine has access to ``base_dir`` (particle
+    positions, incidence rotation, per-wavelength particle/medium n,k
+    interpolation), producing this -- cheap to pickle (a couple of small
+    arrays plus two small pydantic models) -- which
+    :meth:`SweepConfig.run_resolved` then runs against, touching no files
+    at all. ``SweepConfig.run()`` is just ``run_resolved(resolve_inputs())``.
+    """
+
+    coords: np.ndarray
+    radii: np.ndarray
+    wavelengths_m: np.ndarray
+    nk_particle: np.ndarray
+    nk_medium: np.ndarray
+    solver: SolverConfig
+    output: OutputConfig
 
 
 class SweepConfig(BaseModel):
@@ -212,6 +333,223 @@ class SweepConfig(BaseModel):
     incident: IncidentConfig = Field(default_factory=IncidentConfig)
     solver: SolverConfig = Field(default_factory=SolverConfig)
     output: OutputConfig = Field(default_factory=OutputConfig)
+
+    def resolve_inputs(
+        self, base_dir: str | os.PathLike[str] = ""
+    ) -> ResolvedSweepInputs:
+        """Load particle positions (gap-factor/scale-applied, incidence-
+        rotated) and per-wavelength particle/medium refractive indices --
+        every file read ``run()`` does before its solve loop -- into a
+        :class:`ResolvedSweepInputs`. See that class's docstring for why
+        this is split out from :meth:`run_resolved`.
+        """
+        positions = self.particles.load_positions(base_dir)
+        positions = self.incident.rotate_positions(positions)
+        coords = positions[:, :3]
+        radii = positions[:, 3]
+
+        wavelengths_m = self.wavelengths.get_wavelengths_m()
+        wavelengths_raw = wavelengths_m / self.wavelengths.scale
+
+        nk_particle = self.particles.get_nk(wavelengths_raw, base_dir)
+        nk_medium = self.medium.get_nk(wavelengths_raw, base_dir)
+
+        return ResolvedSweepInputs(
+            coords=coords,
+            radii=radii,
+            wavelengths_m=wavelengths_m,
+            nk_particle=nk_particle,
+            nk_medium=nk_medium,
+            solver=self.solver,
+            output=self.output,
+        )
+
+    @staticmethod
+    def run_resolved(
+        resolved: ResolvedSweepInputs,
+        progress_callback: Any = None,
+    ) -> list[dict]:
+        """Run FaSTMM2.solve() once per wavelength against already-resolved
+        inputs (see :meth:`resolve_inputs`) -- no file I/O, safe to call on
+        a machine with no access to whatever ``base_dir`` originally meant.
+        A ``staticmethod`` deliberately -- it needs nothing from ``self``,
+        only ``resolved``, so it's callable as
+        ``SweepConfig.run_resolved(resolved)`` with no ``SweepConfig``
+        instance at all (e.g. on a Dask worker that never had one, only
+        the already-resolved arrays shipped to it).
+
+        With ``resolved.solver.sweep_threads`` resolving to more than 1,
+        wavelengths are solved concurrently in a thread pool -- real
+        concurrency, since the Fortran entry points release the GIL and
+        are safe under concurrent calls (see tests/test_concurrency.py).
+        Results are always returned in wavelength order, regardless of
+        completion order. ``progress_callback`` is then invoked as
+        completions arrive (so the reported wavelengths won't generally be
+        in sweep order), but always from *this* calling thread -- never
+        from a pool thread -- so callbacks driving UIs (Streamlit, rich)
+        need no locking of their own.
+
+        Returns
+        -------
+        list of dicts, one per wavelength, each the same dict solve() (or
+        compute_tmatrix(), if output.compute_tmatrix is set) returns, plus
+        "wavelength_m" and "k" keys.
+        """
+        solver = resolved.solver
+        n = len(resolved.wavelengths_m)
+
+        def solve_one(i: int) -> dict:
+            wl = resolved.wavelengths_m[i]
+            fastmm = FaSTMM(
+                resolved.coords,
+                resolved.radii,
+                refractive_index=resolved.nk_particle[i],
+                medium_refractive_index=resolved.nk_medium[i],
+            )
+            if resolved.output.compute_tmatrix:
+                result = fastmm.compute_tmatrix(
+                    wl,
+                    t_order=resolved.output.t_order,
+                    formulation=solver.formulation,
+                    acc=solver.acc,
+                    tol=solver.tolerance,
+                    restart=solver.restart,
+                    max_iter=solver.max_iterations,
+                    truncation_formula=solver.truncation_formula,
+                    truncation_order=solver.truncation_order,
+                    n_threads=solver.n_threads,
+                )
+            else:
+                result = fastmm.solve(
+                    wl,
+                    N_theta=solver.N_theta,
+                    N_phi=solver.N_phi,
+                    N_ave=solver.N_ave,
+                    halton_init=solver.halton_init,
+                    formulation=solver.formulation,
+                    acc=solver.acc,
+                    tol=solver.tolerance,
+                    restart=solver.restart,
+                    max_iter=solver.max_iterations,
+                    truncation_formula=solver.truncation_formula,
+                    truncation_order=solver.truncation_order,
+                    n_threads=solver.n_threads,
+                    cross_section_convention=solver.cross_section_convention,
+                )
+            result["wavelength_m"] = float(wl)
+            result["k"] = result.pop("k_medium")
+            return result
+
+        sweep_threads = min(resolve_n_threads(solver.sweep_threads), n) if n else 1
+
+        if sweep_threads <= 1:
+            # Serial path, byte-identical to the pre-sweep_threads behavior
+            # (in-order progress callbacks included).
+            results = []
+            for i, wl in enumerate(resolved.wavelengths_m):
+                results.append(solve_one(i))
+                if progress_callback is not None:
+                    progress_callback((i + 1) / n, float(wl))
+            return results
+
+        # Total CPU pressure is sweep_threads * per-solve OpenMP threads.
+        # Warn rather than raise: the caller may know better (e.g. solves
+        # that block on memory bandwidth, or a deliberate benchmark) -- but
+        # silent oversubscription is exactly the failure mode both defaults
+        # are set to 1 to avoid, so it must not pass unremarked. Skipped for
+        # n_threads == 0, the orchestrator sentinel (see SolverConfig.
+        # n_threads): resolve_n_threads() rejects it at solve time, but the
+        # warning path should not crash first.
+        if solver.n_threads != 0:
+            total = sweep_threads * resolve_n_threads(solver.n_threads)
+            cpu_count = os.cpu_count() or 1
+            if total > cpu_count:
+                warnings.warn(
+                    f"sweep_threads ({sweep_threads}) * n_threads "
+                    f"(resolving to {resolve_n_threads(solver.n_threads)}) "
+                    f"= {total} exceeds os.cpu_count() ({cpu_count}) -- "
+                    "the concurrent solves will oversubscribe the machine. "
+                    "Keep sweep_threads * n_threads <= cpu_count.",
+                    stacklevel=2,
+                )
+
+        slots: list[dict | None] = [None] * n
+        with ThreadPoolExecutor(max_workers=sweep_threads) as pool:
+            futures = {pool.submit(solve_one, i): i for i in range(n)}
+            done = 0
+            # as_completed runs in this thread, so progress_callback never
+            # sees a pool thread (see docstring) -- and a failed solve
+            # raises here immediately rather than being swallowed until
+            # some later .result() call.
+            for future in as_completed(futures):
+                i = futures[future]
+                slots[i] = future.result()
+                done += 1
+                if progress_callback is not None:
+                    progress_callback(done / n, float(resolved.wavelengths_m[i]))
+        return cast("list[dict]", slots)  # every slot filled above
+
+    def run(
+        self,
+        base_dir: str | os.PathLike[str] = "",
+        progress_callback: Any = None,
+    ) -> list[dict]:
+        """Run FaSTMM2.solve() once per wavelength in the sweep.
+
+        Parameters
+        ----------
+        base_dir : path used to resolve a relative particles.positions_file
+        progress_callback : optional callable(fraction_done: float, wavelength_m: float)
+            called after each wavelength, e.g. to drive a progress bar.
+
+        Returns
+        -------
+        list of dicts, one per wavelength, each the same dict solve() (or
+        compute_tmatrix(), if output.compute_tmatrix is set) returns, plus
+        "wavelength_m" and "k" keys.
+
+        Thin wrapper around :meth:`resolve_inputs` + :meth:`run_resolved` --
+        split into two steps so a distributed worker (e.g. a Dask task)
+        never needs filesystem access; it can be handed an already-resolved
+        :class:`ResolvedSweepInputs` and call :meth:`run_resolved` directly
+        instead.
+        """
+        return self.run_resolved(self.resolve_inputs(base_dir), progress_callback)
+
+    def run_dask(
+        self,
+        base_dir: str | os.PathLike[str] = "",
+        progress_callback: Any = None,
+        *,
+        client: Any = None,
+        scheduler_address: str | None = None,
+    ) -> list[dict]:
+        """Run the sweep distributed over a Dask cluster: one task per
+        wavelength, results in wavelength order -- the distributed
+        counterpart of :meth:`run`, with the same return shape and the
+        same ``progress_callback`` contract.
+
+        ``resolve_inputs()`` (all file I/O) still happens *here*, on the
+        machine with access to ``base_dir``; only the resolved arrays
+        ship to the workers. Requires the ``dask`` extra
+        (``pip install pyfastmm[dask]``) -- the core package never
+        imports dask; see :mod:`pyfastmm._dask` (and its docstring for
+        what workers must have installed, and how the local
+        ``devenv up`` scheduler fits in).
+
+        Pass an already-connected *client* (caller owns it, never closed
+        here), or a *scheduler_address* (e.g. ``"tcp://127.0.0.1:8786"``,
+        connected and closed here), or neither (a temporary local
+        cluster, for testing).
+        """
+        from pyfastmm._dask import run_resolved_dask
+
+        return run_resolved_dask(
+            self.resolve_inputs(base_dir),
+            progress_callback,
+            client=client,
+            scheduler_address=scheduler_address,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -231,65 +569,5 @@ def run_sweep(
     base_dir: str | os.PathLike[str] = "",
     progress_callback: Any = None,
 ) -> list[dict]:
-    """Run FaSTMM2.solve() once per wavelength in the sweep.
-
-    Parameters
-    ----------
-    config : SweepConfig
-    base_dir : path used to resolve a relative particles.positions_file
-    progress_callback : optional callable(fraction_done: float, wavelength_m: float)
-        called after each wavelength, e.g. to drive a progress bar.
-
-    Returns
-    -------
-    list of dicts, one per wavelength, each the same dict solve() (or
-    compute_tmatrix(), if output.compute_tmatrix is set) returns, plus
-    "wavelength_m" and "k" keys.
-    """
-    med_re, med_im = config.medium.refractive_index
-    if (med_re, med_im) != (1.0, 0.0):
-        warnings.warn(
-            "FaSTMM2 has no background-medium model (always vacuum, n=1); "
-            f"the configured medium.refractive_index={config.medium.refractive_index} "
-            "is ignored.",
-            stacklevel=2,
-        )
-
-    positions = config.particles.load_positions(base_dir)
-    positions = config.incident.rotate_positions(positions)
-    coords = positions[:, :3]
-    radii = positions[:, 3]
-    n = len(radii)
-    eps = np.full(n, config.particles.eps())
-
-    wavelengths_m = config.wavelengths.get_wavelengths_m()
-    wavenumbers = config.wavelengths.get_wavenumbers()
-
-    f = FaSTMM2()
-    solver = config.solver
-    results = []
-    for i, (wl, k) in enumerate(zip(wavelengths_m, wavenumbers)):
-        if config.output.compute_tmatrix:
-            result = f.compute_tmatrix(
-                coords, radii, eps, float(k),
-                t_order=config.output.t_order,
-                formulation=solver.formulation, acc=solver.acc,
-                tol=solver.tolerance, restart=solver.restart,
-                max_iter=solver.max_iterations,
-            )
-        else:
-            result = f.solve(
-                coords, radii, eps, float(k),
-                N_theta=solver.N_theta, N_phi=solver.N_phi,
-                N_ave=solver.N_ave, halton_init=solver.halton_init,
-                formulation=solver.formulation, acc=solver.acc,
-                tol=solver.tolerance, restart=solver.restart,
-                max_iter=solver.max_iterations,
-            )
-        result["wavelength_m"] = float(wl)
-        result["k"] = float(k)
-        results.append(result)
-        if progress_callback is not None:
-            progress_callback((i + 1) / len(wavelengths_m), float(wl))
-
-    return results
+    """Run a sweep. Thin wrapper around :meth:`SweepConfig.run`."""
+    return config.run(base_dir, progress_callback)

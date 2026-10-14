@@ -153,14 +153,12 @@ jobs:
           ref: ${{ needs.check_comment.outputs.sha || inputs.ref }}
           submodules: recursive
 
-      - name: Install gfortran
-        # meson-python's sdist build runs `meson setup`, which requires a
-        # Fortran compiler to be found -- even though producing the sdist
-        # (a source tarball) compiles nothing itself. LAPACK/BLAS aren't
-        # needed here: meson.build never declares them as meson
-        # dependencies, only tools/build_f2py_ext.py links them directly
-        # at actual compile time.
-        run: sudo apt-get update && sudo apt-get install -y gfortran
+      - name: Install gfortran, LAPACK/BLAS and pkg-config
+        # meson-python's sdist build runs `meson setup`, which needs a
+        # Fortran compiler and runs `pkg-config --libs lapack blas` (see
+        # meson.build) at configure time -- even though producing the
+        # sdist (a source tarball) compiles nothing itself.
+        run: sudo apt-get update && sudo apt-get install -y gfortran liblapack-dev libblas-dev pkg-config
 
       - name: Build sdist
         run: pipx run build --sdist

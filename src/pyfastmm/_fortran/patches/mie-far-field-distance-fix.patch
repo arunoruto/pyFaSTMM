@@ -1,0 +1,53 @@
+--- a/external/fastmm2/src/mie.f90
++++ b/external/fastmm2/src/mie.f90
+@@ -1030,7 +1030,13 @@
+ complex(dp) :: i
+ 
+ i = dcmplx(0.0,1.0)
+-RR = 1.0d6 * real(k)
++RR = 1.0d6 / real(k)
++! Cap RR so abs(aimag(k))*RR stays well below double precision's
++! exp() overflow/underflow threshold (~709) even for a strongly
++! absorbing medium -- see patch file for the full explanation.
++if (abs(aimag(k)) * RR > 300.0d0 .and. abs(aimag(k)) > 0.0d0) then
++   RR = 300.0d0 / abs(aimag(k))
++end if
+ allocate(S_out(N_phi*N_theta,18))
+ allocate(J_out(N_phi*N_theta,6))
+ !call inc_xy(Nmax, sphere, b_vec, b_vec2, k)
+@@ -1311,7 +1317,10 @@
+ 
+ E_out(:,:) = dcmplx(0.0,0.0)
+ 
+-RR = 1.0d6*real(k)
++RR = 1.0d6/real(k)
++if (abs(aimag(k)) * RR > 300.0d0 .and. abs(aimag(k)) > 0.0d0) then
++   RR = 300.0d0 / abs(aimag(k))
++end if
+ kr = k * RR
+ 
+ Cext = 0.0
+@@ -1489,12 +1498,19 @@
+       F = E_out(:,las)
+       F = sph2cart_vec(theta, phi, F)     
+       E_out(:,las) = F
+-      
+-      Csca_int = Csca_int + pi/2.0*4.0*pi*RR**2 * &
++
++      ! E_out carries the far-field propagator exp(i*k*RR)/(k*RR); for
++      ! complex k (absorbing host medium) its magnitude decays as
++      ! exp(-aimag(k)*RR), which the real RR**2 factor below does not
++      ! cancel. Divide that attenuation back out, the same way
++      ! mueller_matrix's full complex k*RR/exp(i*k*RR) prefactor does.
++      ! Exact no-op for real k; the RR cap above bounds the exponent
++      ! at 600 < log(huge(1d0)), so the exp() cannot overflow.
++      Csca_int = Csca_int + pi/2.0*4.0*pi*RR**2 * exp(2.0d0*aimag(k)*RR) * &
+            dot_product(E_out(:,las),E_out(:,las)) * &
+-           sin(theta)/dble(N_phi)/dble(N_theta-1) 
++           sin(theta)/dble(N_phi)/dble(N_theta-1)
+ 
+-      q = q + pi/2.0*4.0*pi*RR**2 * &
++      q = q + pi/2.0*4.0*pi*RR**2 * exp(2.0d0*aimag(k)*RR) * &
+            dot_product(E_out(:,las),E_out(:,las)) * &
+            sin(theta)/dble(N_phi)/dble(N_theta-1) * cos(theta)
+            las = las + 1

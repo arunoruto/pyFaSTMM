@@ -1,0 +1,214 @@
+--- a/external/fastmm2/src/matvec_adaptive.f90
++++ b/external/fastmm2/src/matvec_adaptive.f90
+@@ -59,11 +59,11 @@
+ 
+ 
+ ! Compute and store all diagonal translators
+-subroutine compute_translators_mlfma2(otree, k)
++subroutine compute_translators_mlfma2(otree, k, n_threads)
+ type (level_struct), dimension(:) :: otree
+ complex(dp) :: k
+ 
+-integer :: i1, level, acc, L, M, N, box, las
++integer :: i1, level, acc, L, M, N, box, las, n_threads
+ integer ::  box_x, box_y, box_z
+ real(dp) :: mem
+ 
+@@ -106,11 +106,11 @@
+    end do
+ 
+ 
+-   !$omp parallel default(private) &
++   !$omp parallel default(private) num_threads(n_threads) &
+    !$omp firstprivate(box_dl, P, w, L, k, cp_box, boxind, level) &
+-   !$omp shared(otree) 
++   !$omp shared(otree)
+    !$omp do schedule(guided)
+-   do i1 = 1, 7**3         
++   do i1 = 1, 7**3
+       cp_box2(1) = boxind(1,i1) * box_dl
+       cp_box2(2) = boxind(2,i1) * box_dl
+       cp_box2(3) = boxind(3,i1) * box_dl
+@@ -211,12 +211,12 @@
+ 
+ !***********************************************************************************************
+ 
+-subroutine near_zone_interactions_adaptive(sphere, otree, k, level_max, x, x_out, x2, x_out2)
++subroutine near_zone_interactions_adaptive(sphere, otree, k, level_max, x, x_out, x2, x_out2, n_threads)
+ type (data_struct), dimension(:) :: sphere
+ type (level_struct), dimension(:) :: otree
+ complex(dp), dimension(:) :: x , x_out, x2, x_out2
+ complex(dp) :: k
+-integer :: level_max
++integer :: level_max, n_threads
+ 
+ integer :: box, sph1_loc, sph1, Nmax, nm, s1, i1_a1, i1_a2, i1_b1, i1_b2, box2_loc
+ integer :: box2, sph2_loc, sph2, i2_a1, i2_a2, i2_b1, i2_b2, Nmax2, nm2, level
+@@ -229,9 +229,9 @@
+ do level_ind = level_max, 3, -1
+ 
+ 
+-   !$omp parallel default(private) &
++   !$omp parallel default(private) num_threads(n_threads) &
+    !$omp firstprivate(k, level_ind) &
+-   !$omp shared(x_out,x_out2,x,x2, otree, sphere) 
++   !$omp shared(x_out,x_out2,x,x2, otree, sphere)
+    !$omp do schedule(guided)
+ 
+    do box = 1, size(otree(level_ind)%tree)
+@@ -365,13 +365,13 @@
+ 
+ !************************* Aggregation *********************************
+ 
+-subroutine aggregation_adaptive(sphere, otree, aggregates, aggregates2, x, x2, k, max_level, diag)
++subroutine aggregation_adaptive(sphere, otree, aggregates, aggregates2, x, x2, k, max_level, diag, n_threads)
+ type (data_struct), dimension(:) :: sphere
+ type (level_struct), dimension(:) :: otree
+ type (data), dimension(:) :: aggregates, aggregates2
+ complex(dp), dimension(:) :: x, x2
+ complex(dp) :: k
+-integer :: max_level, diag
++integer :: max_level, diag, n_threads
+ 
+ integer :: Nmax_box, nm_box, box, sph1_loc, sph1, Nmax, nm, i1, box2
+ complex(dp), dimension(:,:), allocatable :: a_box_loc, a_box2_loc, b_box_loc, b_box2_loc
+@@ -416,7 +416,7 @@
+       aggregates2(level)%b_ph(:,:) = dcmplx(0.0,0.0)
+    end if
+ 
+-   !$omp parallel default(private) &
++   !$omp parallel default(private) num_threads(n_threads) &
+    !$omp firstprivate(k, level, Nmax_box, Fth, Fph, Gth, Gph, diag) &
+    !$omp shared(aggregates, aggregates2, x, x2, sphere, otree)
+    !$omp do schedule(guided)
+@@ -515,11 +515,11 @@
+ 
+       end if
+       
+-      !$omp parallel default(private) &
++      !$omp parallel default(private) num_threads(n_threads) &
+       !$omp firstprivate(Nmax_box2, k, level, diag) &
+-      !$omp shared(aggregates, aggregates2, otree) 
+-      !$omp do schedule(guided) 
+-    
++      !$omp shared(aggregates, aggregates2, otree)
++      !$omp do schedule(guided)
++
+       do box = 1, size(otree(level)%tree) ! high parent box
+          
+          cp_box = otree(level)%tree(box)%cp 
+@@ -638,13 +638,13 @@
+ !************************************* Disaggregation ****************************************
+ 
+ 
+-subroutine dissaggregation_adaptive(sphere, otree, aggregates, aggregates2, x_out, x_out2, k, max_level, diag)
++subroutine dissaggregation_adaptive(sphere, otree, aggregates, aggregates2, x_out, x_out2, k, max_level, diag, n_threads)
+ type (data_struct), dimension(:) :: sphere
+ type (level_struct), dimension(:) :: otree
+ type (data), dimension(:) :: aggregates, aggregates2
+ complex(dp), dimension(:) :: x_out, x_out2
+ complex(dp) :: k
+-integer :: max_level, diag
++integer :: max_level, diag, n_threads
+ 
+ integer :: level, Nmax_box2, nm_box2, box, box2, Nmax_box1, i2, Nmax_box, sph1_loc, sph1, s1, nm
+ integer :: i1, i1_a1, i1_a2, i1_b1, i1_b2, Nmax
+@@ -688,7 +688,7 @@
+    end if
+ 
+    
+-   !$omp parallel default(private) &
++   !$omp parallel default(private) num_threads(n_threads) &
+    !$omp firstprivate(Nmax_box2, k, level, diag) &
+    !$omp shared(aggregates,aggregates2, otree)
+    !$omp do schedule(guided)
+@@ -839,7 +839,7 @@
+    allocate(a_box_loc((Nmax_box+1)**2-1,2))
+    allocate(b_box_loc((Nmax_box+1)**2-1,2))
+ 
+-   !$omp parallel default(private) &
++   !$omp parallel default(private) num_threads(n_threads) &
+    !$omp firstprivate(k, level,Fth, Fph, Gth, Gph, Nmax_box, diag) &
+    !$omp shared(x_out,x_out2, aggregates, aggregates2, otree, sphere)
+    !$omp do schedule(guided)
+@@ -937,7 +937,7 @@
+ 
+ 
+ ! Matrix-vector multiplication accelerated by MLFMA (two polarizations)
+-subroutine matvec_mlfmm_diag(sphere, otree, k, x, x_out, x2, x_out2)
++subroutine matvec_mlfmm_diag(sphere, otree, k, x, x_out, x2, x_out2, n_threads)
+ type (data_struct), dimension(:) :: sphere
+ type (level_struct), dimension(:) :: otree
+ complex(dp), dimension(:) :: x , x_out, x2, x_out2
+@@ -945,7 +945,7 @@
+ 
+ type (data), dimension(:), allocatable :: aggregates, aggregates2
+ 
+-integer :: Nmax, nm, s1, Nmax2, nm2
++integer :: Nmax, nm, s1, Nmax2, nm2, n_threads
+ integer :: box, box2
+ integer :: box2_loc, i1, near_box, Nmax_box, ii1
+ integer :: Nmax_box1, Nmax_box2, L_max_box, M0, N0, trans_ind
+@@ -1027,7 +1027,7 @@
+ !*************** Near-zone interactions *******************************
+ 
+ 
+-call near_zone_interactions_adaptive(sphere, otree, k, level_ind, x, x_out, x2, x_out2)
++call near_zone_interactions_adaptive(sphere, otree, k, level_ind, x, x_out, x2, x_out2, n_threads)
+ 
+ call system_clock(T2)
+ 
+@@ -1042,7 +1042,7 @@
+ !*********** Aggregation step *********************************
+ call system_clock(T1,rate)
+ 
+-call aggregation_adaptive(sphere, otree, aggregates, aggregates2, x, x2, k, max_level, diag)
++call aggregation_adaptive(sphere, otree, aggregates, aggregates2, x, x2, k, max_level, diag, n_threads)
+ 
+ call system_clock(T2)
+ if(sphere(1)%ifT == 0) print*, 'Aggregation done in', real(T2-T1) / real(rate)
+@@ -1107,7 +1107,7 @@
+ 
+  
+    
+-   !$omp parallel default(private) &
++   !$omp parallel default(private) num_threads(n_threads) &
+    !$omp firstprivate(level, Nmax_box, k, diag, P0, w0) &
+    !$omp shared(a_box2, b_box2, c_box2, d_box2) &
+    !$omp shared(a_box2_2, b_box2_2, c_box2_2, d_box2_2) &
+@@ -1231,7 +1231,7 @@
+ 
+ call system_clock(T1,rate)
+ 
+-call dissaggregation_adaptive(sphere, otree, aggregates, aggregates2, x_out, x_out2, k, max_level, diag)
++call dissaggregation_adaptive(sphere, otree, aggregates, aggregates2, x_out, x_out2, k, max_level, diag, n_threads)
+ 
+ call system_clock(T2)
+ if(sphere(1)%ifT == 0) print*, 'Disaggregation done in', real(T2-T1) / real(rate)
+@@ -1246,12 +1246,12 @@
+ !
+ !************************************************************************
+ 
+-subroutine matvec_diag(sphere,  k, x, x_out, x2, x_out2)
++subroutine matvec_diag(sphere,  k, x, x_out, x2, x_out2, n_threads)
+ type (data_struct), dimension(:) :: sphere
+ complex(dp), dimension(:) :: x , x_out, x2, x_out2
+ complex(dp) :: k
+ 
+-integer :: sph1, sph2, Nspheres, Nmax, nm, s1, Nmax2, nm2
++integer :: sph1, sph2, Nspheres, Nmax, nm, s1, Nmax2, nm2, n_threads
+ integer :: i1_a1, i1_a2, i1_b1, i1_b2, i2_a1, i2_a2, i2_b1, i2_b2, box, box2
+ integer :: sph1_loc, sph2_loc, box2_loc, i1, near_box, Nmax_box
+ integer :: Nmax_box1, Nmax_box2, L_max_box
+@@ -1269,9 +1269,9 @@
+  
+ !***************  interactions *******************************
+ 
+-!$omp parallel default(private) &
++!$omp parallel default(private) num_threads(n_threads) &
+ !$omp firstprivate(k, level_ind, Nspheres) &
+-!$omp shared(x_out,x_out2,x,x2, sphere) 
++!$omp shared(x_out,x_out2,x,x2, sphere)
+ !$omp do schedule(dynamic,1)
+ 
+ do sph1 = 1, Nspheres

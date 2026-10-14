@@ -1,0 +1,66 @@
+--- a/external/fastmm2/src/orientation_averaging.f90
++++ b/external/fastmm2/src/orientation_averaging.f90
+@@ -68,13 +68,13 @@
+   
+  
+   subroutine orientation_ave(sphere, Tmat,  ifT, k, N_phi, N_th, N_ave, halton_init, &
+-    S_ave, crs_tot, form, tol, restart, max_iter, acc)
++    S_ave, crs_tot, form, tol, restart, max_iter, acc, n_threads)
+   type (data_struct) :: sphere(:)
+   type (Tmatrix), dimension(:), allocatable :: Tmat
+   type (data_struct), allocatable :: sphere_new(:)
+   type (level_struct), dimension(:), allocatable :: otree
+   integer :: restart, max_iter, halton_init, max_level, t1, t2, rate, N_phi, N_th
+-  integer :: N_ave, ori, th, phi, Nmax, ifT,i1, form, acc
++  integer :: N_ave, ori, th, phi, Nmax, ifT,i1, form, acc, n_threads
+   real(dp) :: ka, tol, int, g, crs(5), crs_tot(5), Csca_int
+   complex(dp) :: k
+   real(dp), dimension(:,:), allocatable :: S_ave, mueller
+@@ -107,15 +107,18 @@
+      
+         print*, "Building interpolators..."
+         call build_interpolation_matrix_mlfma2(otree)
+-        call compute_translators_mlfma2(otree, k)
++        call compute_translators_mlfma2(otree, k, n_threads)
+         call initialize_samples(otree, k)
+      end if
+      ka = dble(k)*sqrt(3.0d0)/2.0d0 * otree(1)%tree(1)%dl
+-     Nmax = truncation_order(ka) 
++     ! NOTE: always truncation_order(ka), not truncation_order2 -- unlike
++     ! build_octree's fixed-orientation path, this never honored
++     ! truncation_formula (pre-existing behavior, preserved as-is here).
++     Nmax = truncation_order(ka)
+ 
+      sphere(1)%ifT = ifT
+-        
+-     call rhs2_xy(Nmax, sphere_new, Tmat, b_vec, b_vec2, k)
++
++     call rhs2_xy(Nmax, sphere_new, Tmat, b_vec, b_vec2, k, n_threads)
+ 
+         !     call cluster_out2in(sphere_new, k, b_vec)
+         !     call cluster_out2in(sphere_new, k, b_vec2)
+@@ -125,7 +128,7 @@
+      
+      print*, 'Size of Krylov subspace:', floor(2.0*max_iter*size(xx)/1024.0/1024.0*64.0/8.0), 'Mb' 
+      
+-     call gmres_mlfmm2(sphere_new, otree, Tmat, k, b_vec,b_vec2, xx, xx2, tol, restart, max_iter)
++     call gmres_mlfmm2(sphere_new, otree, Tmat, k, b_vec,b_vec2, xx, xx2, tol, restart, max_iter, n_threads)
+ 
+ !     call cluster_in2out(sphere_new, k, xx)
+ !     call cluster_in2out(sphere_new, k, xx2)
+@@ -133,13 +136,13 @@
+      print*, 'Post processing...'
+      deallocate(b_vec,b_vec2)
+     
+-     call inc_xy(Nmax, sphere_new, b_vec, b_vec2, k)
++     call inc_xy(Nmax, sphere_new, b_vec, b_vec2, k, n_threads)
+ 
+ 
+ !*************************************************************
+ 
+     
+-     call mueller_matrix(sphere_new, xx, xx2, b_vec, b_vec2, k, N_th, N_phi, Nmax, mueller, jones, crs,0.0_dp,0.0_dp)
++     call mueller_matrix(sphere_new, xx, xx2, b_vec, b_vec2, k, N_th, N_phi, Nmax, mueller, jones, crs,0.0_dp,0.0_dp, n_threads)
+ 
+      
+ 

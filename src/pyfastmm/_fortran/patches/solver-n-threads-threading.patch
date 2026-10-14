@@ -1,0 +1,129 @@
+--- a/external/fastmm2/src/solver.f90
++++ b/external/fastmm2/src/solver.f90
+@@ -209,14 +209,14 @@
+ !****************************************************************************
+ ! Compute right hand side for a planewave incident
+ 
+-subroutine inc_xy(Nmax, sphere, b_vecx, b_vecy, k)
++subroutine inc_xy(Nmax, sphere, b_vecx, b_vecy, k, n_threads)
+ type (data_struct), dimension(:) :: sphere
+ complex(dp), dimension(:), allocatable :: b_vecx, b_vecy, a_nm1, b_nm1
+ complex(dp), dimension(:,:), allocatable :: a_in, b_in
+ complex(dp), dimension(:,:), allocatable :: a_out, b_out
+ complex(dp), dimension(:), allocatable :: c_nm1, d_nm1
+ complex(dp) :: k, phase_shift
+-integer ::  Nspheres, n, Nmax, loc, sph, bsize, las, nm, nm_in, N_in, Nmax2
++integer ::  Nspheres, n, Nmax, loc, sph, bsize, las, nm, nm_in, N_in, Nmax2, n_threads
+ complex(dp), dimension(:,:), allocatable :: DDD
+ complex(dp), dimension(:), allocatable :: rotD
+ integer, dimension(:,:), allocatable :: indD
+@@ -241,7 +241,7 @@
+ 
+ 
+ 
+-!$omp parallel default(private) &
++!$omp parallel default(private) num_threads(n_threads) &
+ !$omp firstprivate(k, Nspheres, Nmax, a_in,b_in) &
+ !$omp shared(b_vecx,b_vecy,sphere)
+ !$omp do
+@@ -330,7 +330,7 @@
+ end subroutine normalize_coeff
+ 
+ 
+-subroutine rhs2_xy(Nmax, sphere, Tmat, b_vecx, b_vecy, k)
++subroutine rhs2_xy(Nmax, sphere, Tmat, b_vecx, b_vecy, k, n_threads)
+ type (data_struct), dimension(:) :: sphere
+ type (Tmatrix), dimension(:) :: Tmat
+ 
+@@ -339,7 +339,7 @@
+ complex(dp), dimension(:,:), allocatable :: a_out, b_out, a_out2, b_out2
+ complex(dp), dimension(:), allocatable :: c_nm1, d_nm1
+ complex(dp) :: k, phase_shift
+-integer ::  Nspheres, n, Nmax, loc, sph, bsize, las, nm, nm_in, N_in, Nmax2, ind
++integer ::  Nspheres, n, Nmax, loc, sph, bsize, las, nm, nm_in, N_in, Nmax2, ind, n_threads
+ complex(dp), dimension(:,:), allocatable :: DDD, rotD2
+ complex(dp), dimension(:), allocatable :: rotD
+ integer, dimension(:,:), allocatable :: indD
+@@ -364,7 +364,7 @@
+ 
+ 
+ 
+-!$omp parallel default(private) &
++!$omp parallel default(private) num_threads(n_threads) &
+ !$omp firstprivate(k, Nspheres, Nmax, a_in,b_in) &
+ !$omp shared(b_vecx,b_vecy, Tmat, sphere)
+ !$omp do
+@@ -454,14 +454,14 @@
+ 
+ !***********************************************************************
+ 
+-subroutine matvecI_mlfmm2(sphere, otree, Tmat, k, x, x_out, x2, x_out2)
++subroutine matvecI_mlfmm2(sphere, otree, Tmat, k, x, x_out, x2, x_out2, n_threads)
+ type (data_struct), dimension(:) :: sphere
+ type (level_struct), dimension(:) :: otree
+ type (Tmatrix), dimension(:) :: Tmat
+ 
+ complex(dp), dimension(:) :: x , x_out, x2, x_out2
+ complex(dp) :: k
+-integer :: sph, Nmax, nm, a1,a2, b1, b2, ind, las, n
++integer :: sph, Nmax, nm, a1,a2, b1, b2, ind, las, n, n_threads
+ complex(dp), dimension(:), allocatable :: a_nm,b_nm,c_nm,d_nm
+ complex(dp), dimension(:,:), allocatable :: a_in,b_in,a_out,b_out, rotD2
+ complex(dp), dimension(:), allocatable :: rotD
+@@ -479,9 +479,9 @@
+ 
+ 
+ if(otree(1)%form == 0) then
+-   call matvec_diag(sphere, k, x, x_out, x2, x_out2)
++   call matvec_diag(sphere, k, x, x_out, x2, x_out2, n_threads)
+ else
+-   call matvec_mlfmm_diag(sphere,otree, k, x, x_out, x2, x_out2)
++   call matvec_mlfmm_diag(sphere,otree, k, x, x_out, x2, x_out2, n_threads)
+ end if
+ 
+ if(size(Tmat) == 0) then
+@@ -590,7 +590,7 @@
+ ! output: solution vectors x and x2
+ !**********************************************************************
+ 
+-subroutine gmres_mlfmm2(sphere, otree, Tmat, kk, b,b2, x,x2, tol, restart, maxit)
++subroutine gmres_mlfmm2(sphere, otree, Tmat, kk, b,b2, x,x2, tol, restart, maxit, n_threads)
+ type (data_struct), dimension(:) :: sphere
+ type (level_struct), dimension(:) :: otree
+ type (Tmatrix), dimension(:) :: Tmat
+@@ -598,7 +598,7 @@
+ complex(dp), dimension(:) :: b, x, b2, x2
+ real(dp) :: tol
+ complex(dp) :: kk
+-integer :: restart, maxit
++integer :: restart, maxit, n_threads
+ 
+ complex(dp), dimension(:), allocatable :: r, w, cs, sn, g, y, Ax, mx
+ complex(dp), dimension(:), allocatable :: r2, w2, cs2, sn2, g2, y2, Ax2, mx2
+@@ -679,7 +679,7 @@
+    mx2 = x2
+    !call matvecI(sphere, kk, mx, Ax)
+   
+-   call matvecI_mlfmm2(sphere, otree, Tmat, kk, mx, Ax, mx2, Ax2)
++   call matvecI_mlfmm2(sphere, otree, Tmat, kk, mx, Ax, mx2, Ax2, n_threads)
+   
+    r = b-Ax
+    r2 = b2 - Ax2
+@@ -717,7 +717,7 @@
+       !call matvecI(sphere, kk, mx, Ax)
+ 
+     
+-      call matvecI_mlfmm2(sphere,otree, Tmat,kk, mx, Ax, mx2, Ax2)
++      call matvecI_mlfmm2(sphere,otree, Tmat,kk, mx, Ax, mx2, Ax2, n_threads)
+      
+       w = Ax
+       w2 = Ax2
+@@ -859,7 +859,7 @@
+ 
+    !call matvecI(sphere, kk, mx, Ax)
+   
+-   call matvecI_mlfmm2(sphere,otree, Tmat, kk, x, Ax, x2, Ax2)
++   call matvecI_mlfmm2(sphere,otree, Tmat, kk, x, Ax, x2, Ax2, n_threads)
+    
+    r = b - Ax
+    r2 = b2 - Ax2

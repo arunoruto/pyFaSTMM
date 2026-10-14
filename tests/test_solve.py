@@ -1,9 +1,77 @@
 """Basic physical-sanity tests for FaSTMM2.solve(), no CLI binary required."""
 
+import os
+
 import numpy as np
 import pytest
 
-from pyfastmm import FaSTMM2
+from pyfastmm import FaSTMM2, eps_from_index, resolve_n_threads
+
+
+def test_eps_from_index_squares_refractive_index():
+    assert eps_from_index(1.5 + 0.01j) == pytest.approx((1.5 + 0.01j) ** 2)
+    np.testing.assert_allclose(
+        eps_from_index([1.5 + 0.01j, 2.0 + 0.0j]),
+        [(1.5 + 0.01j) ** 2, (2.0 + 0.0j) ** 2],
+    )
+
+
+def test_resolve_n_threads_positive_int_passes_through():
+    assert resolve_n_threads(1) == 1
+    assert resolve_n_threads(5) == 5
+
+
+def test_resolve_n_threads_negative_is_offset_from_cpu_count():
+    cpu_count = os.cpu_count() or 1
+    assert resolve_n_threads(-1) == cpu_count - 1
+    assert resolve_n_threads(-2) == cpu_count - 2
+
+
+def test_resolve_n_threads_negative_offset_clamps_to_at_least_one():
+    cpu_count = os.cpu_count() or 1
+    assert resolve_n_threads(-(cpu_count + 10)) == 1
+
+
+def test_resolve_n_threads_zero_raises():
+    with pytest.raises(ValueError):
+        resolve_n_threads(0)
+
+
+def test_solve_rejects_nonpositive_or_nonfinite_radii():
+    """Non-positive/non-finite radii must be rejected in Python -- the
+    Fortran core doesn't validate and can hang (not crash) on a negative
+    radius, so this guard is load-bearing, not cosmetic."""
+    f = FaSTMM2()
+    coords = [[-1.5, 0.0, 0.0], [1.5, 0.0, 0.0]]
+    eps = [3.0 + 0.1j, 3.0 + 0.1j]
+    for bad_radii in ([1.0, -1.0], [0.0, 1.0], [1.0, float("nan")]):
+        with pytest.raises(ValueError, match="positive and finite"):
+            f.solve(coords, bad_radii, eps, k=1.2, N_theta=5, N_phi=1)
+
+
+def test_resolve_n_threads_float_fraction_of_cpu_count():
+    """A float in (0, 1] is a *fraction* of cpu_count -- e.g. 0.5 (or the
+    literal 1/2) means half the machine's CPUs, rounded. This is distinct
+    from the int 1, which means exactly one thread, not "100%"."""
+    cpu_count = os.cpu_count() or 1
+    assert resolve_n_threads(1 / 2) == round(cpu_count * 0.5)
+    assert resolve_n_threads(0.5) == round(cpu_count * 0.5)
+    assert resolve_n_threads(1.0) == cpu_count
+    assert resolve_n_threads(1) == 1  # int 1 != float 1.0's "100%" reading
+
+
+def test_resolve_n_threads_float_fraction_clamps_to_at_least_one():
+    # A tiny fraction on any real machine should still resolve to >= 1.
+    assert resolve_n_threads(0.001) >= 1
+
+
+def test_resolve_n_threads_negative_offset_past_cpu_count_clamps_to_one():
+    """On a machine with fewer CPUs than the requested offset (e.g. -6 on
+    a 4-core box), cpu_count + n_threads goes negative -- must clamp to 1,
+    not return a negative or zero thread count."""
+    assert resolve_n_threads(-6) == max(1, (os.cpu_count() or 1) - 6)
+    if (os.cpu_count() or 1) < 6:
+        assert resolve_n_threads(-6) == 1
 
 
 def test_single_sphere_solve():
@@ -44,6 +112,96 @@ def test_two_sphere_solve_no_nan():
     )
     assert not np.any(np.isnan(result["mueller"]))
     assert result["c_ext"] > 0
+
+
+def test_complex_k_absorbing_medium_no_nan():
+    """Regression test for a real bug: mueller_matrix()/
+    compute_cluster_fields_far() picked the far-field evaluation radius as
+    RR = 1.0d6 * real(k) (external/fastmm2/src/mie.f90, dimensionally wrong
+    -- RR is a distance in meters, real(k) has units of 1/length -- and
+    numerically catastrophic: for optical k ~1e7 rad/m this put RR ~1e13 m,
+    at which exp(i*k*RR) underflows to exact complex zero for *any*
+    absorbing medium, i.e. any complex k with nonzero imaginary part --
+    corrupting the entire Mueller/Jones matrix (division by exact zero)
+    while cross sections stayed finite (they don't evaluate the field at
+    RR). Fixed via src/pyfastmm/_fortran/patches/mie-far-field-distance-fix.patch
+    (RR = 1.0d6 / real(k)). This is not an edge case for pyfastmm's own
+    v1.1 medium support -- any nonzero medium.refractive_index absorption
+    (k channel) triggers it, so a strongly absorbing composite (metal
+    nanoparticle in a host medium, giving a negative-real-part effective
+    permittivity) is exactly the regime that first surfaced this."""
+    f = FaSTMM2()
+    n_medium = 1.85 + 0.0011j  # a weakly-absorbing dielectric host
+    eps = ((2.08 + 3.113j) / n_medium) ** 2  # metal-in-dielectric composite
+    k = 2 * np.pi * n_medium / 0.52e-6
+
+    result = f.solve(
+        coords=[[0.0, 0.0, 0.0]], radii=[5e-9], eps=[eps], k=complex(k),
+        N_theta=37, N_phi=4, formulation=0, acc=2, tol=1e-4,
+    )
+    mueller = result["mueller"]
+    assert not np.any(np.isnan(mueller))
+    assert np.all(mueller[:, 2] >= 0)  # P11 (phase function) positivity
+    assert result["c_ext"] > 0
+    assert result["c_abs"] > 0
+    assert result["c_ext"] == pytest.approx(
+        result["c_ext_minus_c_abs"] + result["c_abs"]
+    )
+
+
+def test_n_threads_does_not_change_results():
+    """Thread count must be purely a performance knob -- results have to
+    be identical (well within GMRES/quadrature tolerance) regardless of
+    how many OpenMP threads the matvec/solver/far-field code use."""
+    f = FaSTMM2()
+    kwargs = dict(
+        coords=[[-2.0, 0.0, 0.0], [2.0, 0.0, 0.0]],
+        radii=[1.0, 1.0],
+        eps=[2.5 + 0.1j, 2.5 + 0.1j],
+        k=1.0,
+        N_theta=11,
+        N_phi=1,
+        tol=1e-6,
+    )
+    results = [f.solve(**kwargs, n_threads=n) for n in (1, 2, 4, -1)]
+    for r in results[1:]:
+        assert r["c_ext"] == pytest.approx(results[0]["c_ext"], rel=1e-10)
+        assert r["c_abs"] == pytest.approx(results[0]["c_abs"], rel=1e-10)
+        # atol matters here: some Mueller entries are near-zero by symmetry
+        # for this cluster, where differing OpenMP reduction order across
+        # thread counts leaves relative-only comparison noisy despite the
+        # absolute difference being ~1e-18 (physically negligible).
+        np.testing.assert_allclose(
+            r["mueller"], results[0]["mueller"], rtol=1e-8, atol=1e-10
+        )
+
+
+def test_solve_n_threads_calls_resolve_n_threads(monkeypatch):
+    """solve() is the single choke point every n_threads-taking call
+    (FaSTMM2.solve()/compute_tmatrix(), and transitively FaSTMM's own
+    solve()/compute_tmatrix()) funnels through -- pin that a negative
+    n_threads actually goes through resolve_n_threads() rather than
+    reaching the Fortran extension raw (undefined behavior there)."""
+    import pyfastmm._fastmm as fastmm_mod
+
+    seen = {}
+    orig_resolve = fastmm_mod.resolve_n_threads
+
+    def spy(n):
+        seen["arg"] = n
+        return orig_resolve(n)
+
+    monkeypatch.setattr(fastmm_mod, "resolve_n_threads", spy)
+    FaSTMM2().solve(
+        coords=[[0.0, 0.0, 0.0]],
+        radii=[1.0],
+        eps=[2.5 + 0.1j],
+        k=1.0,
+        N_theta=11,
+        N_phi=1,
+        n_threads=-1,
+    )
+    assert seen["arg"] == -1
 
 
 def test_orientation_average_matches_fixed_for_single_sphere():
