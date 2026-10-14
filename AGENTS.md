@@ -90,7 +90,7 @@ guards this by comparing threaded results against the same calls run serially.
 Three layers, each building on the one below — put shared physics logic at the lowest layer that needs it:
 
 - `_fastmm.py` — `FaSTMM2`: thin, stateless wrapper over the extension. Geometry + `eps` + `k` in, dict out.
-  Also the shared host-medium helpers (`eps_relative_to_medium`, `k_in_medium`, `medium_flux_norm`,
+  Also the shared host-medium helpers (`eps_relative_to_medium`, `k_in_medium`, `_mstm_medium_factor`,
   `eps_from_index`, `resolve_n_threads`).
 - `_cluster.py` — `FaSTMM`: ergonomic class API taking refractive indices and a vacuum wavelength, applying the
   medium transform, incidence rotation, and the cross-section convention. `version` (which solver) is a
@@ -119,7 +119,7 @@ Three layers, each building on the one below — put shared physics logic at the
   ~1.3% off against MSTM when both angles are nonzero).
 - Cross sections are **physical** by default (per unit irradiance in the host; a sphere in a host equals Mie
   with `m/n_host`, `Q_ext -> 2` for large absorbers). `cross_section_convention="mstm"` multiplies all four
-  (`c_sca` included) by `medium_flux_norm(n_host) = Re(n_host)`, MSTM's medium mode. Raw `FaSTMM2.solve()`
+  (`c_sca` included) by `_mstm_medium_factor(n_host) = Re(n_host)`, MSTM's medium mode. Raw `FaSTMM2.solve()`
   is always physical.
 - Truncation: `truncation_formula` is 0 or 1 (ka-based formulas); `truncation_order` (>= 2) is an explicit
   per-sphere order and overrides it. The Fortran wrapper takes one integer (0/1 formula, >= 2 explicit

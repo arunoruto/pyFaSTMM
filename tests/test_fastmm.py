@@ -7,15 +7,15 @@ from pyfastmm import (
     FaSTMM,
     FaSTMM2,
     eps_from_index,
-    medium_flux_norm,
     radiative_transfer_phase_function,
 )
+from pyfastmm._fastmm import _mstm_medium_factor
 
 
 def test_vacuum_medium_matches_raw_fastmm2_call():
     """With the default (vacuum) medium, FaSTMM.solve() must reduce
     exactly to a raw FaSTMM2().solve() call -- no transform, no
-    correction (medium_flux_norm(1+0j) == 1.0)."""
+    correction (_mstm_medium_factor(1+0j) == 1.0)."""
     coords = [[0.0, 0.0, 0.0]]
     radii = [1.0]
     n_particle = 3.0 + 0.1j
@@ -72,7 +72,7 @@ def test_mstm_convention_is_re_n_medium_times_physical():
     mstm, _ = _host_medium_solve(n_medium, cross_section_convention="mstm")
     for key in _CROSS_SECTIONS:
         assert mstm[key] == pytest.approx(physical[key] * n_medium.real)
-    assert medium_flux_norm(n_medium) == pytest.approx(n_medium.real)
+    assert _mstm_medium_factor(n_medium) == pytest.approx(n_medium.real)
 
 
 def test_unknown_cross_section_convention_raises():

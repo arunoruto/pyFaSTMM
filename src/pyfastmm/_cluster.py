@@ -29,9 +29,9 @@ import numpy as np
 
 from pyfastmm._fastmm import (
     FaSTMM2,
+    _mstm_medium_factor,
     eps_relative_to_medium,
     k_in_medium,
-    medium_flux_norm,
 )
 from pyfastmm._results import SolveResult, TMatrixResult
 
@@ -239,7 +239,7 @@ class FaSTMM:
           absorbing sphere has ``Q_ext -> 2``.
         - ``"mstm"``: MSTM's medium mode, normalised by the vacuum
           irradiance of the same field amplitude, i.e. the physical values
-          multiplied by ``Re(n_host)`` (see ``medium_flux_norm()``). Use it
+          multiplied by ``Re(n_host)`` (see ``_mstm_medium_factor()``). Use it
           to compare with MSTM output.
 
         Both conventions agree in vacuum.
@@ -336,7 +336,7 @@ class FaSTMM:
             n_threads=n_threads,
         )
         if cross_section_convention == "mstm":
-            factor = medium_flux_norm(self.medium_refractive_index)
+            factor = _mstm_medium_factor(self.medium_refractive_index)
             for key in ("c_ext", "c_abs", "c_ext_minus_c_abs", "c_sca"):
                 result[key] *= factor
         result["k_medium"] = k_medium

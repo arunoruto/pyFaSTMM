@@ -22,7 +22,7 @@ the bundled FaSTMM2 sources for absorbing hosts and touching small spheres.
   in the host, and a large absorbing sphere has `Q_ext -> 2`. The new
   `cross_section_convention="mstm"` (on `FaSTMM.solve()` and in
   `[solver]`) returns MSTM's medium-mode values instead, normalised by the
-  vacuum irradiance, i.e. multiplied by `Re(n_host)` (`medium_flux_norm()`).
+  vacuum irradiance, i.e. multiplied by `Re(n_host)`.
   Both conventions agree in vacuum.
 - **`FaSTMM` class**: takes vacuum-referenced refractive indices, a host
   medium and a vacuum wavelength, applies the medium transform and the

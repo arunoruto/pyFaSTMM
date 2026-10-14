@@ -12,7 +12,6 @@ from pyfastmm._fastmm import (
     eps_relative_to_medium,
     get_tmatrix_size,
     k_in_medium,
-    medium_flux_norm,
     resolve_n_threads,
 )
 
@@ -24,7 +23,6 @@ __all__ = [
     "get_tmatrix_size",
     "k_in_medium",
     "load_config",
-    "medium_flux_norm",
     "radiative_transfer_phase_function",
     "resolve_n_threads",
     "rotate_for_incidence",

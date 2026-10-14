@@ -136,7 +136,7 @@ def k_in_medium(k_vacuum, n_medium):
     return k_vacuum * n_medium
 
 
-def medium_flux_norm(n_medium):
+def _mstm_medium_factor(n_medium):
     """MSTM medium-mode cross-section factor, ``Re(n_medium)``.
 
     ``FaSTMM2.solve()`` returns physical cross sections: power removed
