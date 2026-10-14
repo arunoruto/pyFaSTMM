@@ -37,7 +37,7 @@ Example
     refractive_index = [1.5, 0.01]
 
     [medium]
-    refractive_index_file = "nk_olivine.csv"
+    refractive_index_file = "nk_host.csv"
 
     [wavelengths]
     start = 0.4
@@ -58,7 +58,7 @@ import warnings
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 import numpy as np
 from pydantic import BaseModel, Field, model_validator
@@ -215,9 +215,9 @@ class IncidentConfig(BaseModel):
         # azimuthal). Order matters here: for a single nonzero angle any
         # order agrees (trivial composition), but with both angles nonzero
         # simultaneously the *other* order (R = Rz @ Ry) was empirically
-        # found to disagree with MSTM by up to ~1.3% (t-bench's cross-tool
-        # validation -- this function used to have that bug) while this one
-        # matches to <0.0002%.
+        # found to disagree with MSTM by up to ~1.3% (cross-tool validation
+        # -- this function used to have that bug) while this one matches to
+        # <0.0002%.
         cos_t, sin_t = np.cos(-theta), np.sin(-theta)
         Ry = np.array([[cos_t, 0, sin_t], [0, 1, 0], [-sin_t, 0, cos_t]])
         cos_p, sin_p = np.cos(-phi), np.sin(-phi)
@@ -241,32 +241,37 @@ class SolverConfig(BaseModel):
     N_phi: int = 32
     N_ave: int = 0  # 0 = fixed orientation
     halton_init: int = 0
-    truncation_formula: int = 0
+    truncation_formula: Literal[0, 1] = 0
     """Per-sphere Mie truncation formula (see FaSTMM2.solve()'s docstring).
-    0 (default, unchanged from pre-v1.1 behavior): floor(ka + 3*ka**(1/3)),
-    min 6. 1: the more conservative formula -- needed for touching,
-    small-ka, high-refractive-index-contrast clusters (e.g. nanometer-scale
-    metal monomers), where formula 0 under-resolves near-field coupling and
-    under-converges Cext by double-digit percentages."""
+    0 (default): floor(ka + 3*ka**(1/3)), min 6. 1: the more conservative
+    formula -- needed for touching, small-ka, high-refractive-index-contrast
+    clusters (e.g. nanometer-scale metal monomers), where formula 0
+    under-resolves near-field coupling and under-converges Cext by
+    double-digit percentages."""
+    truncation_order: int | None = Field(default=None, ge=2)
+    """Explicit per-sphere expansion order; overrides truncation_formula
+    when set (see FaSTMM2.solve())."""
+    cross_section_convention: Literal["physical", "mstm"] = "physical"
+    """Cross-section normalisation in a host medium (see FaSTMM.solve()):
+    "physical" (default) is per unit irradiance in the host; "mstm" is
+    MSTM's medium mode, Re(n_host) times larger."""
     n_threads: int | float = 1
     """OpenMP thread count for the GMRES matvec/solver/far-field hot paths
     (see FaSTMM.solve()'s docstring for measured scaling and why 1, not
     "all cores", is the default -- this matters especially for a sweep
     over many wavelengths/clusters run under its own process-level
-    parallelism, e.g. spcwth's campaign.py, where workers * n_threads can
-    oversubscribe the machine if this isn't kept conservative). May be
-    negative, meaning an offset from os.cpu_count() -- see
-    resolve_n_threads().
+    parallelism, where workers * n_threads can oversubscribe the machine
+    if this isn't kept conservative). May be negative, meaning an offset
+    from os.cpu_count() -- see resolve_n_threads().
 
-    ``0`` is *reserved as a downstream sentinel*, not a valid value here:
-    resolve_n_threads() rejects it, so any solve attempted with 0 raises.
-    spcwth's campaign.py uses 0 in its TOML to mean "resolve per Dask
-    worker at runtime" and replaces it with a real count on the worker
-    before run_resolved() ever executes. Deliberately NOT implemented
-    natively in pyfastmm: the right per-worker count depends on how the
-    cluster's workers are provisioned (task slots vs CPUs), which the
-    orchestrator knows and this library doesn't. pyfastmm's only
-    accommodation is skipping its oversubscription warning for 0."""
+    ``0`` is reserved as a sentinel for orchestrators, not a valid value
+    here: resolve_n_threads() rejects it, so any solve attempted with 0
+    raises. An orchestrator may use 0 in its TOML to mean "resolve per
+    worker at runtime" and replace it with a real count before
+    run_resolved() executes (the right per-worker count depends on how
+    workers are provisioned, which the orchestrator knows and this
+    library doesn't). pyfastmm's only accommodation is skipping its
+    oversubscription warning for 0."""
     sweep_threads: int | float = 1
     """Number of *wavelengths* solved concurrently by run_resolved(), via a
     Python thread pool. Real concurrency, not GIL-serialized: the Fortran
@@ -281,8 +286,8 @@ class SolverConfig(BaseModel):
     one-solve was measured to fall off past ~8 threads (see
     FaSTMM2.solve()'s docstring). Defaults to 1 (serial, the pre-existing
     behavior) for the same reason n_threads does: a caller running many
-    sweeps under its own process-level parallelism (spcwth's campaign.py,
-    a Dask worker with multiple task slots) must not be silently
+    sweeps under its own process-level parallelism (e.g. a Dask worker
+    with multiple task slots) must not be silently
     oversubscribed by a nested pool it didn't ask for. Accepts the same
     shapes as n_threads: positive int (absolute), negative (offset from
     os.cpu_count()), float in (0, 1] (fraction of it) -- see
@@ -411,6 +416,7 @@ class SweepConfig(BaseModel):
                     restart=solver.restart,
                     max_iter=solver.max_iterations,
                     truncation_formula=solver.truncation_formula,
+                    truncation_order=solver.truncation_order,
                     n_threads=solver.n_threads,
                 )
             else:
@@ -426,7 +432,9 @@ class SweepConfig(BaseModel):
                     restart=solver.restart,
                     max_iter=solver.max_iterations,
                     truncation_formula=solver.truncation_formula,
+                    truncation_order=solver.truncation_order,
                     n_threads=solver.n_threads,
+                    cross_section_convention=solver.cross_section_convention,
                 )
             result["wavelength_m"] = float(wl)
             result["k"] = result.pop("k_medium")
@@ -449,10 +457,9 @@ class SweepConfig(BaseModel):
         # that block on memory bandwidth, or a deliberate benchmark) -- but
         # silent oversubscription is exactly the failure mode both defaults
         # are set to 1 to avoid, so it must not pass unremarked. Skipped for
-        # n_threads == 0, spcwth's "resolve per Dask worker at runtime"
-        # sentinel (resolve_n_threads() rejects 0; campaign.py replaces it
-        # before calling here, but don't crash the warning path if some
-        # other caller doesn't).
+        # n_threads == 0, the orchestrator sentinel (see SolverConfig.
+        # n_threads): resolve_n_threads() rejects it at solve time, but the
+        # warning path should not crash first.
         if solver.n_threads != 0:
             total = sweep_threads * resolve_n_threads(solver.n_threads)
             cpu_count = os.cpu_count() or 1

@@ -35,7 +35,8 @@ contains
 !  coupling of touching spheres needs more terms), >= 2 = use the value
 !  itself as an explicit per-sphere order (convergence studies; touching
 !  deep-Rayleigh clusters converge slowly in order and the ka-based
-!  formulas have no handle on that -- see TODO-AI.md section 2.6).
+!  formulas have no handle on that). The Python layer exposes this as
+!  separate truncation_formula / truncation_order arguments.
 !  A real, per-call argument (not module state, unlike before this
 !  file's GIL-release refactor) -- see fastmm2_solve_fixed's docstring
 !  for why that matters.
@@ -87,7 +88,7 @@ subroutine build_spheres(n, coords, radii, eps_r, eps_i, k, truncation_formula, 
           ! Explicit per-sphere truncation order: ka-based formulas
           ! under-truncate badly for touching spheres in the deep-Rayleigh
           ! regime, where the near-field coupling (not the size parameter)
-          ! sets the required multipole order -- see TODO-AI.md section 2.6.
+          ! sets the required multipole order.
           sphere(sph)%Nmax = truncation_formula
        else if (truncation_formula == 1) then
           sphere(sph)%Nmax = truncation_order2(ka)

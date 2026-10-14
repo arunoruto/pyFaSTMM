@@ -37,6 +37,7 @@ Usage:
 from __future__ import annotations
 
 import os
+from typing import Literal
 
 import numpy as np
 
@@ -114,10 +115,9 @@ def eps_from_index(n):
 # medium is modeled by transforming both: the particle's permittivity
 # *relative to the medium* instead of relative to vacuum, and a complex
 # wavenumber *in* the medium instead of the vacuum one. These three
-# functions are the shared implementation of that transform -- used by
-# SweepConfig.run() (this package) and t-bench's fastmm2-python adapter,
-# which independently need the exact same formulas since neither one goes
-# through the other.
+# functions are the shared implementation of that transform, used by
+# FaSTMM (and through it SweepConfig) and available to callers that drive
+# FaSTMM2 directly.
 
 
 def eps_relative_to_medium(n_particle, n_medium):
@@ -137,25 +137,19 @@ def k_in_medium(k_vacuum, n_medium):
 
 
 def medium_flux_norm(n_medium):
-    """Cross-section correction factor for a host medium.
+    """MSTM medium-mode cross-section factor, ``Re(n_medium)``.
 
-    FaSTMM2's ``cross_sections()``/``sphere_absorbtion2()`` (which produce
-    ``c_ext``/``c_abs``/``c_ext_minus_c_abs``) implicitly assume vacuum-like
-    incident-flux normalization (Poynting flux ~ ``|E|**2``); a real host
-    medium's flux instead scales as ``Re(n_medium) * |E|**2``, so those
-    three cross sections need multiplying by this factor. Confirmed against
-    MSTM (which models this correctly) for iron-in-olivine clusters: up to
-    ~46% off without this factor, <0.03% with it, for single sphere,
-    touching pair, 4-chain, and a real 32-sphere fractal aggregate.
+    ``FaSTMM2.solve()`` returns physical cross sections: power removed
+    from the beam per unit incident irradiance *in the host medium*. For a
+    single sphere in a non-absorbing host they equal Mie theory with the
+    relative index ``m / n_medium`` and the size parameter in the host
+    (Bohren & Huffman), so a large absorbing sphere has ``Q_ext -> 2``.
 
-    Applies to the far-field-integrated ``c_sca`` as well (since
-    2026-08-01): with the propagator-attenuation fix in
-    ``mie-far-field-distance-fix.patch``, the raw far-field ``c_sca``
-    equals the raw ``c_ext - c_abs`` to ~5e-5 (angular quadrature) for a
-    lossless medium, so energy conservation forces the same factor on all
-    four cross sections. (It was excluded historically, while the raw
-    value was broken in absorbing media -- see TODO-AI.md section 2.6.)
-    With a vacuum medium this returns exactly ``1.0`` (a no-op).
+    MSTM's medium mode normalises by the vacuum irradiance of the same
+    field amplitude instead, which makes its cross sections larger by
+    ``Re(n_medium)``. Multiply physical cross sections by this factor to
+    compare with MSTM, or pass ``cross_section_convention="mstm"`` to
+    ``FaSTMM.solve()``. With a vacuum medium this returns exactly ``1.0``.
     """
     return complex(n_medium).real
 
@@ -184,6 +178,26 @@ def _prepare_geometry(coords, radii, eps):
         raise ValueError("radii must all be positive and finite")
 
     return n, coords_f, radii, np.real(eps).copy(), np.imag(eps).copy()
+
+
+def _fortran_truncation(truncation_formula, truncation_order):
+    """Encode the truncation choice as the single integer the Fortran
+    wrapper takes: 0/1 select a ka-based formula, a value >= 2 is an
+    explicit per-sphere order."""
+    if truncation_order is not None:
+        if isinstance(truncation_order, bool) or int(truncation_order) != truncation_order:
+            raise ValueError(f"truncation_order must be an integer, got {truncation_order!r}")
+        if truncation_order < 2:
+            raise ValueError(f"truncation_order must be >= 2, got {truncation_order}")
+        return int(truncation_order)
+    if truncation_formula is None:
+        return 0
+    if truncation_formula not in (0, 1):
+        raise ValueError(
+            f"truncation_formula must be 0 or 1, got {truncation_formula!r} "
+            "(use truncation_order for an explicit expansion order)"
+        )
+    return int(truncation_formula)
 
 
 def _cross_sections_dict(crs):
@@ -217,7 +231,8 @@ class FaSTMM2:
         tol=1e-4,
         restart=5,
         max_iter=50,
-        truncation_formula: int | None = None,
+        truncation_formula: Literal[0, 1] | None = None,
+        truncation_order: int | None = None,
         n_threads: int | float | None = None,
     ):
         """Solve for the Mueller matrix (and, for fixed orientation, Jones
@@ -252,23 +267,26 @@ class FaSTMM2:
             Desired MLFMM accuracy, in number of significant digits.
         tol, restart, max_iter : float, int, int
             GMRES solver parameters.
-        truncation_formula : int, optional
+        truncation_formula : {0, 1}, optional
             Per-sphere Mie truncation formula: 0 (default) --
             ``truncation_order``, ``floor(ka + 3*ka^(1/3))``, min 6; 1 --
             ``truncation_order2``, a more conservative formula that gives
             larger expansion orders, especially for small ``ka`` where the
             default can under-resolve near-field coupling of touching
-            spheres; any value >= 2 -- used directly as an explicit
-            per-sphere expansion order (touching deep-Rayleigh clusters
-            converge slowly in order, so ka-based formulas cannot express
-            the required order -- see TODO-AI.md section 2.6; measured
-            useful up to ~20, beyond which the translation arithmetic
-            itself starts losing precision at very small ka).
-            ``None`` (default) resolves to 0. A real, per-call
-            argument passed straight through to the Fortran extension
-            (not global/process state -- see ``!f2py threadsafe`` on the
-            wrapped subroutines), so concurrent calls with different
-            values from different Python threads are safe.
+            spheres. ``None`` resolves to 0.
+        truncation_order : int, optional
+            Explicit per-sphere expansion order (>= 2); overrides
+            ``truncation_formula`` when given. The cluster-level order is
+            raised to at least this value. Touching spheres at small size
+            parameter converge slowly in order, which ka-based formulas
+            cannot express; orders beyond ~20 start losing precision in
+            the translation arithmetic at very small ka. Note that both
+            formulas never go below 6.
+
+            Both truncation arguments are real per-call arguments passed
+            straight through to the Fortran extension (not global/process
+            state), so concurrent calls with different values from
+            different Python threads are safe.
         n_threads : int, optional
             OpenMP thread count used by the GMRES matrix-vector product
             (the per-iteration hot path), the solver, and far-field
@@ -277,16 +295,16 @@ class FaSTMM2:
             absolute count, or a float in (0, 1] for a fraction of it.
             ``None`` (default) resolves to 1 -- deliberately conservative,
             since a caller solving many clusters across its own process-
-            or thread-level parallelism (e.g. a campaign sweep) would
+            or thread-level parallelism (e.g. a wavelength sweep) would
             otherwise oversubscribe the machine by workers * OpenMP's
             default thread count without asking for it. Raise it
-            explicitly for a single, one-off solve: measured on a real
-            128-sphere touching iron-in-olivine aggregate (16 logical
-            cores), near-linear speedup through 8 threads (4.7x over 1
-            thread), but *worse* at 16 than at 8 (oversubscription) --
-            picking a good value for your hardware matters more than
-            "more is better". Like truncation_formula, a real per-call
-            argument -- safe under concurrent calls with different values.
+            explicitly for a single, one-off solve: measured on a
+            128-sphere touching aggregate (16 logical cores), near-linear
+            speedup through 8 threads (4.7x over 1 thread), but *worse*
+            at 16 than at 8 (oversubscription) -- picking a good value for
+            your hardware matters more than "more is better". Like the
+            truncation arguments, a real per-call argument -- safe under
+            concurrent calls with different values.
 
         Returns
         -------
@@ -307,8 +325,8 @@ class FaSTMM2:
             asymmetry : float
                 Asymmetry parameter <cos(theta)>.
         """
-        resolved_truncation_formula = (
-            0 if truncation_formula is None else truncation_formula
+        resolved_truncation_formula = _fortran_truncation(
+            truncation_formula, truncation_order
         )
         resolved_n_threads = 1 if n_threads is None else resolve_n_threads(n_threads)
 
@@ -368,7 +386,8 @@ class FaSTMM2:
         tol=1e-4,
         restart=5,
         max_iter=50,
-        truncation_formula: int | None = None,
+        truncation_formula: Literal[0, 1] | None = None,
+        truncation_order: int | None = None,
         n_threads: int | float | None = None,
     ):
         """Compute the T-matrix of a cluster of spherical monomers.
@@ -379,7 +398,7 @@ class FaSTMM2:
             Same meaning as in solve().
         t_order : int
             Requested T-matrix truncation order.
-        truncation_formula, n_threads : int, optional
+        truncation_formula, truncation_order, n_threads : optional
             Same meaning as in solve().
 
         Returns
@@ -388,8 +407,8 @@ class FaSTMM2:
         (nm, nm) where nm = get_tmatrix_size(t_order), ordered as
         (-1(1),0(1),1(1),-2(2),...,N(N)).
         """
-        resolved_truncation_formula = (
-            0 if truncation_formula is None else truncation_formula
+        resolved_truncation_formula = _fortran_truncation(
+            truncation_formula, truncation_order
         )
         resolved_n_threads = 1 if n_threads is None else resolve_n_threads(n_threads)
 

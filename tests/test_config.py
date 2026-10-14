@@ -75,22 +75,10 @@ def test_medium_applies_refractive_index():
     assert results[0]["c_ext"] > 0
 
 
-def test_medium_flux_normalization_matches_raw_solve_times_re_n_medium():
-    """Regression test for a real cross-section bug: SweepConfig.run()
-    used to report FaSTMM2's raw cross sections unchanged, but
-    cross_sections()/sphere_absorbtion2() implicitly assume vacuum-like
-    incident-flux normalization (Poynting flux ~ |E|^2) -- a real host
-    medium needs an extra Re(n_medium), since flux ~ Re(n_medium)*|E|^2.
-    Confirmed against MSTM (which does model this) on single sphere,
-    touching pair, 4-chain, and a real 32-sphere fractal aggregate in an
-    absorbing medium: ~46% off without this factor, <0.03% with it.
-
-    This test doesn't have MSTM available to cross-check against, but
-    pins the *mechanism*: SweepConfig.run()'s reported c_ext/c_abs must
-    equal a raw FaSTMM2().solve() call (using the same k_medium/eps_eff
-    SweepConfig.run() itself computes) times Re(n_medium) -- i.e. the
-    correction is applied exactly once, not zero or twice.
-    """
+def test_host_medium_cross_sections_are_physical_by_default():
+    """SweepConfig.run() reports physical cross sections by default: exactly
+    a raw FaSTMM2().solve() with the same k_medium/eps_eff, no Re(n_medium)
+    factor (that is the opt-in "mstm" convention, see the next test)."""
     n_particle = 1.5 + 0.01j
     n_medium = 1.3 + 0.0j
     wavelength = 5.0
@@ -113,11 +101,8 @@ def test_medium_flux_normalization_matches_raw_solve_times_re_n_medium():
         coords, radii, np.full(len(radii), eps_eff), complex(k_medium)
     )
 
-    assert results[0]["c_ext"] == pytest.approx(raw["c_ext"] * n_medium.real)
-    assert results[0]["c_abs"] == pytest.approx(raw["c_abs"] * n_medium.real)
-    assert results[0]["c_ext_minus_c_abs"] == pytest.approx(
-        raw["c_ext_minus_c_abs"] * n_medium.real
-    )
+    for key in ("c_ext", "c_abs", "c_ext_minus_c_abs"):
+        assert results[0][key] == pytest.approx(raw[key])
 
 
 def test_incident_rotation_identity_at_zero_angle():
@@ -143,7 +128,7 @@ def test_incident_rotation_matches_validated_order_for_combined_angles():
     """Regression test for a real bug: with both polar and azimuthal
     nonzero simultaneously, rotation order matters (R = Ry @ Rz, Rz
     applied first) -- this function used to compose them the other way
-    (R = Rz @ Ry), which t-bench's cross-tool validation against MSTM
+    (R = Rz @ Ry), which cross-tool validation against MSTM
     found disagrees by up to ~1.3% (matches to <0.0002% with the order
     pinned here). A single nonzero angle can't distinguish the two orders
     (trivial composition), so this needs both simultaneously nonzero."""
@@ -166,6 +151,19 @@ def test_incident_rotation_matches_validated_order_for_combined_angles():
 def test_solver_config_truncation_formula_default_and_override():
     assert SolverConfig().truncation_formula == 0
     assert SolverConfig(truncation_formula=1).truncation_formula == 1
+    assert SolverConfig().truncation_order is None
+    assert SolverConfig(truncation_order=10).truncation_order == 10
+    with pytest.raises(ValueError):
+        SolverConfig(truncation_formula=8)  # explicit orders go in truncation_order
+    with pytest.raises(ValueError):
+        SolverConfig(truncation_order=1)
+
+
+def test_solver_config_cross_section_convention():
+    assert SolverConfig().cross_section_convention == "physical"
+    assert SolverConfig(cross_section_convention="mstm").cross_section_convention == "mstm"
+    with pytest.raises(ValueError):
+        SolverConfig(cross_section_convention="vacuum")
 
 
 def test_solver_config_n_threads_default_and_override():
@@ -192,7 +190,7 @@ def test_sweep_config_run_passes_n_threads_through(monkeypatch):
     orig_solve = config_mod.FaSTMM.solve
 
     def spy_solve(self, *args, **kwargs):
-        seen["n_threads"] = kwargs.get("n_threads")
+        seen.update(kwargs)
         return orig_solve(self, *args, **kwargs)
 
     monkeypatch.setattr(config_mod.FaSTMM, "solve", spy_solve)
@@ -202,10 +200,15 @@ def test_sweep_config_run_passes_n_threads_through(monkeypatch):
             positions_file="fractal_N128_Df2.0.dat", refractive_index=(1.5, 0.0)
         ),
         wavelengths=WavelengthsConfig(start=5.0, stop=6.0, num=1, scale=1.0),
-        solver=SolverConfig(n_threads=3),
+        solver=SolverConfig(
+            n_threads=3, truncation_order=7, cross_section_convention="mstm",
+            N_theta=11, N_phi=1,
+        ),
     )
     cfg.run(base_dir=_DATA_DIR)
     assert seen["n_threads"] == 3
+    assert seen["truncation_order"] == 7
+    assert seen["cross_section_convention"] == "mstm"
 
 
 def test_particles_and_medium_share_get_nk_behavior():

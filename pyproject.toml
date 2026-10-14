@@ -49,6 +49,11 @@ dask = ["distributed>=2024.1"]
 [project.urls]
 Repository = "https://github.com/arunoruto/pyFaSTMM"
 
+[dependency-groups]
+# Test-only references (not published as an extra). A default group (see
+# [tool.uv] default-groups), so `uv sync --extra dev` installs it too.
+test = ["miepython>=3.0.5"]
+
 [tool.pyright]
 exclude = [".venv"]
 venvPath = "."
@@ -128,6 +133,7 @@ environment = { FC = "gfortran-13" }
 # (which has meson/ninja via the `dev` extra above), so the recorded path
 # stays valid for the life of the venv.
 no-build-isolation-package = ["pyfastmm"]
+default-groups = ["test"]
 
 [build-system]
 # meson-python drives meson.build, which in turn shells out to

@@ -3,7 +3,13 @@
 import numpy as np
 import pytest
 
-from pyfastmm import FaSTMM, FaSTMM2, eps_from_index, radiative_transfer_phase_function
+from pyfastmm import (
+    FaSTMM,
+    FaSTMM2,
+    eps_from_index,
+    medium_flux_norm,
+    radiative_transfer_phase_function,
+)
 
 
 def test_vacuum_medium_matches_raw_fastmm2_call():
@@ -32,35 +38,100 @@ def test_refractive_index_broadcasts_to_all_particles():
     np.testing.assert_array_equal(fastmm.refractive_index, [1.5 + 0.01j, 1.5 + 0.01j])
 
 
-def test_medium_flux_normalization_matches_raw_solve_times_re_n_medium():
-    """Same regression this bug got fixed for in _config.py::SweepConfig.run()
-    -- FaSTMM.solve() must apply the identical correction."""
+def _host_medium_solve(n_medium, **kwargs):
+    """A single absorbing sphere in a host, through FaSTMM and through a raw
+    FaSTMM2 call with the same eps/k transform."""
     n_particle = 1.5 + 0.01j
-    n_medium = 1.3 + 0.0j
     wavelength = 5.0
-
     fastmm = FaSTMM(
         [[0.0, 0.0, 0.0]], [1.0], refractive_index=n_particle,
         medium_refractive_index=n_medium,
     )
-    result = fastmm.solve(wavelength, N_theta=19, N_phi=1)
-
-    k_vacuum = 2 * np.pi / wavelength
-    k_medium = k_vacuum * n_medium
-    eps_eff = (n_particle / n_medium) ** 2
+    result = fastmm.solve(wavelength, N_theta=19, N_phi=1, **kwargs)
     raw = FaSTMM2().solve(
-        [[0.0, 0.0, 0.0]], [1.0], [eps_eff], complex(k_medium), N_theta=19, N_phi=1
+        [[0.0, 0.0, 0.0]], [1.0], [(n_particle / n_medium) ** 2],
+        complex(2 * np.pi / wavelength * n_medium), N_theta=19, N_phi=1,
     )
+    return result, raw
 
-    assert result["c_ext"] == pytest.approx(raw["c_ext"] * n_medium.real)
-    assert result["c_abs"] == pytest.approx(raw["c_abs"] * n_medium.real)
-    assert result["c_ext_minus_c_abs"] == pytest.approx(
-        raw["c_ext_minus_c_abs"] * n_medium.real
+
+_CROSS_SECTIONS = ("c_ext", "c_abs", "c_ext_minus_c_abs", "c_sca")
+
+
+def test_host_medium_default_is_raw_fastmm2():
+    """Default convention is physical: FaSTMM.solve() returns exactly what
+    the raw FaSTMM2 call does (no Re(n_medium) factor)."""
+    result, raw = _host_medium_solve(1.3 + 0.0j)
+    for key in _CROSS_SECTIONS:
+        assert result[key] == pytest.approx(raw[key])
+
+
+def test_mstm_convention_is_re_n_medium_times_physical():
+    n_medium = 1.3 + 0.002j
+    physical, _ = _host_medium_solve(n_medium)
+    mstm, _ = _host_medium_solve(n_medium, cross_section_convention="mstm")
+    for key in _CROSS_SECTIONS:
+        assert mstm[key] == pytest.approx(physical[key] * n_medium.real)
+    assert medium_flux_norm(n_medium) == pytest.approx(n_medium.real)
+
+
+def test_unknown_cross_section_convention_raises():
+    fastmm = FaSTMM([[0.0, 0.0, 0.0]], [1.0], refractive_index=1.5 + 0.0j)
+    with pytest.raises(ValueError, match="cross_section_convention"):
+        fastmm.solve(1.0, N_theta=11, N_phi=1, cross_section_convention="vacuum")
+
+
+# Single sphere in a non-absorbing host vs Mie theory with the relative
+# index m / n_host and the size parameter in the host (Bohren & Huffman).
+_WL = 1.0e-6
+_N_FE = 2.868 + 4.192j  # iron (Querry) at 1 um, an absorbing test particle
+
+
+def _mie_q(n_p, n_host, r, wl=_WL):
+    miepython = pytest.importorskip("miepython")
+    qe, qs, _, g = miepython.efficiencies_mx(n_p / n_host, 2 * np.pi * n_host * r / wl)
+    return qe, qe - qs, g
+
+
+@pytest.mark.parametrize("n_host", (1.0, 1.33, 1.8476))
+@pytest.mark.parametrize("n_p,r", [(_N_FE, 5e-9), (_N_FE, 200e-9), (1.6 + 0j, 50e-9)])
+def test_single_sphere_in_host_equals_mie(n_host, n_p, r):
+    qe, qa, g = _mie_q(n_p, n_host, r)
+    res = FaSTMM([[0, 0, 0]], [r], refractive_index=n_p, medium_refractive_index=n_host).solve(
+        _WL, N_theta=91, N_phi=8, truncation_order=8,
     )
-    # c_sca (far-field) gets the same correction since the propagator
-    # attenuation fix: raw c_sca == raw (c_ext - c_abs) for a lossless
-    # medium, so energy conservation forces the identical factor.
-    assert result["c_sca"] == pytest.approx(raw["c_sca"] * n_medium.real)
+    area = np.pi * r * r
+    assert res["c_ext"] / area == pytest.approx(qe, rel=1e-6)
+    assert res["c_abs"] / area == pytest.approx(qa, rel=1e-6, abs=1e-12)
+    assert res["asymmetry"] == pytest.approx(g, abs=2e-3)
+
+
+@pytest.mark.parametrize("n_host", (1.0, 1.33, 1.8476))
+def test_large_absorbing_sphere_extinguishes_twice_its_area(n_host):
+    """Extinction paradox: physical Q_ext -> 2 for a large absorbing sphere
+    in any non-absorbing host; the "mstm" convention would give 2 n_host.
+    Checked on Mie (a 100 um sphere is out of reach for the solver), which
+    the test above ties to the physical default."""
+    qe, _, _ = _mie_q(_N_FE, n_host, 100e-6)
+    assert qe == pytest.approx(2.0, rel=0.03)
+    if n_host > 1.2:
+        assert abs(qe - 2.0) < abs(qe - 2.0 * n_host) / 10
+
+
+def test_truncation_order_validation():
+    fastmm = FaSTMM([[0.0, 0.0, 0.0]], [1.0], refractive_index=1.5 + 0.0j)
+    with pytest.raises(ValueError, match="truncation_order"):
+        fastmm.solve(2 * np.pi, N_theta=11, N_phi=1, truncation_order=1)
+    with pytest.raises(ValueError, match="truncation_formula"):
+        fastmm.solve(2 * np.pi, N_theta=11, N_phi=1, truncation_formula=8)
+
+
+def test_truncation_order_overrides_formula():
+    fastmm = FaSTMM([[0.0, 0.0, 0.0]], [1.0], refractive_index=1.5 + 0.01j)
+    kw = dict(N_theta=11, N_phi=1)
+    a = fastmm.solve(2 * np.pi, truncation_order=12, **kw)
+    b = fastmm.solve(2 * np.pi, truncation_formula=1, truncation_order=12, **kw)
+    assert a["c_ext"] == b["c_ext"]
 
 
 def test_medium_correction_is_a_no_op_for_vacuum():
@@ -196,12 +267,11 @@ def test_all_v2_formulations_are_accepted():
 
 
 def test_absorbing_medium_c_sca_survives_propagator_attenuation():
-    """Regression for the far-field attenuation bug (TODO-AI.md section 2.6):
+    """Regression for the far-field attenuation bug:
     compute_cluster_fields_far integrated RR**2 * |E|**2 without dividing
     out the propagator's exp(-2*Im(k)*RR) decay, so an absorbing host
     medium suppressed c_sca by exp(-2e6*kappa/n) -- ~2e-7 for kappa=1e-5
-    here, saturating at exp(-600) ~ 1e-260 once the RR cap engages (the
-    exact ~10^260.8 factor measured in the space-weathering campaign).
+    here, saturating at exp(-600) ~ 1e-260 once the RR cap engages.
     A weakly absorbing host must now give essentially the lossless-host
     c_sca; the tiny residual drift is the genuine physics of the medium."""
     coords = [[0.0, 0.0, 0.0]]
@@ -224,8 +294,7 @@ def test_absorbing_medium_c_sca_survives_propagator_attenuation():
 
 
 def test_touching_pair_rotational_invariance_deep_rayleigh():
-    """Regression for the deep-Rayleigh conditioning bug (TODO-AI.md
-    section 2.6, item 2): the unscaled GMRES system for touching spheres at
+    """Regression for the deep-Rayleigh conditioning bug: the unscaled GMRES system for touching spheres at
     size parameter x << 1 is numerically singular in double precision
     (measured rcond ~ 1e-60 at Nmax=13, x ~ 0.04), so the "converged"
     solution -- and every cross section derived from it -- depended on the
@@ -234,8 +303,8 @@ def test_touching_pair_rotational_invariance_deep_rayleigh():
     wavelength grid. With the Jacobi-balanced solve
     (solver-deep-rayleigh-gmres-scaling.patch) results are
     orientation-independent; measured spread is ~1e-6 relative."""
-    n_fe = 3.985 + 9.471j          # iron at 2976nm (Querry)
-    n_med = 1.830993 + 0.001069j   # olivine host (Fabian 2001)
+    n_fe = 3.985 + 9.471j          # a metal (iron, Querry) at 2976nm
+    n_med = 1.830993 + 0.001069j   # a weakly absorbing silicate host
     lam = 2.9762e-6
     r = 10e-9
     s = r / np.sqrt(2.0)
@@ -254,11 +323,10 @@ def test_touching_pair_rotational_invariance_deep_rayleigh():
 
 
 def test_c_sca_equals_c_ext_minus_c_abs_in_lossless_medium():
-    """Energy-conservation anchor: with the attenuation fix AND c_sca now
-    included in medium_flux_norm, the far-field-integrated c_sca must match
-    the optical-theorem c_ext - c_abs for an absorbing particle in a
-    lossless medium, limited only by angular quadrature (~5e-4 at this
-    grid; 23% off before c_sca joined the flux normalization)."""
+    """Energy-conservation anchor: with the attenuation fix, the
+    far-field-integrated c_sca must match the optical-theorem c_ext - c_abs
+    for an absorbing particle in a lossless medium (in either convention),
+    limited only by angular quadrature (~5e-4 at this grid)."""
     fastmm = FaSTMM(
         [[0.0, 0.0, 0.0]], [1.0], refractive_index=1.5 + 0.01j,
         medium_refractive_index=1.3 + 0.0j,

@@ -4,13 +4,11 @@ FaSTMM2.solve() itself is deliberately minimal (geometry in, arrays out,
 no state) -- but every real caller ends up needing the same handful of
 things around it: transforming a particle/medium refractive index pair
 into what solve() actually wants (eps relative to the medium, a complex
-medium wavenumber), correcting for the medium's incident-flux
-normalization, and rotating the cluster to emulate tilted incidence
-(FaSTMM2's beam is fixed along +z). Two independent call sites --
-SweepConfig.run() here and t-bench's fastmm2-python adapter -- used to
-each reimplement all of that by hand. FaSTMM is the one shared
-implementation both now build on, so a bug in this logic only needs
-fixing once.
+medium wavenumber), choosing the cross-section convention in a host
+medium, and rotating the cluster to emulate tilted incidence (FaSTMM2's
+beam is fixed along +z). FaSTMM is the one shared implementation of that
+(SweepConfig builds on it too), so a bug in this logic only needs fixing
+once.
 
 Named after the software family (FaSTMM), not the specific solver
 version (FaSTMM2) -- `version` picks which one, defaulting to 2, the
@@ -24,6 +22,8 @@ one flat list of "valid combinations".
 """
 
 from __future__ import annotations
+
+from typing import Literal
 
 import numpy as np
 
@@ -101,6 +101,17 @@ def _unsupported_version(version) -> ValueError:
     return ValueError(
         f"pyfastmm.FaSTMM only supports version=2 (FaSTMM2); got version={version!r}"
     )
+
+
+CrossSectionConvention = Literal["physical", "mstm"]
+
+
+def _validate_convention(cross_section_convention) -> None:
+    if cross_section_convention not in ("physical", "mstm"):
+        raise ValueError(
+            "cross_section_convention must be 'physical' or 'mstm', got "
+            f"{cross_section_convention!r}"
+        )
 
 
 def _validate_formulation_v2(formulation) -> None:
@@ -202,30 +213,43 @@ class FaSTMM:
         tol=1e-4,
         restart=5,
         max_iter=50,
-        truncation_formula=0,
+        truncation_formula: Literal[0, 1] = 0,
+        truncation_order: int | None = None,
         n_threads: int | float = 1,
+        cross_section_convention: CrossSectionConvention = "physical",
     ):
         """Solve for the Mueller/Jones matrix and cross sections at
         ``wavelength_vacuum`` (same length unit as ``coords``/``radii``).
 
         Returns the same dict ``FaSTMM2.solve()`` does (``mueller``,
         ``jones`` when ``N_ave==0``, ``c_ext``, ``c_abs``,
-        ``c_ext_minus_c_abs``, ``c_sca``, ``asymmetry``), with
-        ``c_ext``/``c_abs``/``c_ext_minus_c_abs``/``c_sca`` already
-        corrected for the host medium's incident-flux normalization (see
-        ``medium_flux_norm()``; ``c_sca`` was excluded historically, but
-        with the far-field attenuation fix in
-        ``mie-far-field-distance-fix.patch`` the raw far-field ``c_sca``
-        provably equals the raw ``c_ext - c_abs`` for a lossless medium,
-        so it needs the identical factor to stay consistent). Also adds
+        ``c_ext_minus_c_abs``, ``c_sca``, ``asymmetry``). Also adds
         ``"k_medium"`` (the complex wavenumber actually used) and
         ``"eps"`` (the per-particle permittivity actually used), mainly
         so ``radiative_transfer_phase_function()`` can use them without
         the caller re-deriving them.
 
+        ``cross_section_convention`` selects how cross sections in a host
+        medium are normalised:
+
+        - ``"physical"`` (default): power per unit incident irradiance in
+          the host, exactly what ``FaSTMM2.solve()`` returns. A single
+          sphere in a non-absorbing host equals Mie theory with
+          ``m / n_host`` and the size parameter in the host, and a large
+          absorbing sphere has ``Q_ext -> 2``.
+        - ``"mstm"``: MSTM's medium mode, normalised by the vacuum
+          irradiance of the same field amplitude, i.e. the physical values
+          multiplied by ``Re(n_host)`` (see ``medium_flux_norm()``). Use it
+          to compare with MSTM output.
+
+        Both conventions agree in vacuum.
+
+        ``truncation_formula``/``truncation_order`` select the per-sphere
+        expansion order -- see ``FaSTMM2.solve()``.
+
         ``n_threads`` defaults to 1 (*not* "use all cores") -- deliberately
         conservative, since a caller solving many clusters across its own
-        process- or thread-level parallelism (e.g. a campaign sweep) would
+        process- or thread-level parallelism (e.g. a wavelength sweep) would
         otherwise oversubscribe the machine by workers * OpenMP's default
         thread count without asking for it. Raise it explicitly for a
         single, one-off solve (see ``FaSTMM2.solve()``'s docstring for
@@ -238,8 +262,9 @@ class FaSTMM:
         Raises
         ------
         ValueError
-            If ``self.version`` isn't a supported FaSTMM version, or
-            ``formulation`` isn't valid for that version.
+            If ``self.version`` isn't a supported FaSTMM version,
+            ``formulation`` isn't valid for that version, or
+            ``cross_section_convention`` is unknown.
         """
         match self.version:
             case 2:
@@ -257,7 +282,9 @@ class FaSTMM:
                     restart=restart,
                     max_iter=max_iter,
                     truncation_formula=truncation_formula,
+                    truncation_order=truncation_order,
                     n_threads=n_threads,
+                    cross_section_convention=cross_section_convention,
                 )
             case _:
                 raise _unsupported_version(self.version)
@@ -278,9 +305,12 @@ class FaSTMM:
         restart,
         max_iter,
         truncation_formula,
+        truncation_order,
         n_threads,
+        cross_section_convention,
     ):
         _validate_formulation_v2(formulation)
+        _validate_convention(cross_section_convention)
 
         eps, k_medium = self._eps_and_k(wavelength_vacuum)
         coords = rotate_for_incidence(
@@ -302,13 +332,13 @@ class FaSTMM:
             restart=restart,
             max_iter=max_iter,
             truncation_formula=truncation_formula,
+            truncation_order=truncation_order,
             n_threads=n_threads,
         )
-        flux_norm = medium_flux_norm(self.medium_refractive_index)
-        result["c_ext"] *= flux_norm
-        result["c_abs"] *= flux_norm
-        result["c_ext_minus_c_abs"] *= flux_norm
-        result["c_sca"] *= flux_norm
+        if cross_section_convention == "mstm":
+            factor = medium_flux_norm(self.medium_refractive_index)
+            for key in ("c_ext", "c_abs", "c_ext_minus_c_abs", "c_sca"):
+                result[key] *= factor
         result["k_medium"] = k_medium
         result["eps"] = eps
         # Store the validated model on the instance (the class-driven
@@ -330,14 +360,15 @@ class FaSTMM:
         tol=1e-4,
         restart=5,
         max_iter=50,
-        truncation_formula=0,
+        truncation_formula: Literal[0, 1] = 0,
+        truncation_order: int | None = None,
         n_threads: int | float = 1,
     ):
         """Compute the cluster's T-matrix at ``wavelength_vacuum``. Same
-        medium transform as ``solve()``; no flux-normalization correction
-        applies here (the T-matrix has no cross sections to correct).
-        ``truncation_formula``/``n_threads`` default the same way as
-        ``solve()`` -- see its docstring.
+        medium transform as ``solve()`` (the cross-section convention does
+        not apply: a T-matrix has no cross sections).
+        ``truncation_formula``/``truncation_order``/``n_threads`` default
+        the same way as ``solve()`` -- see its docstring.
 
         Raises
         ------
@@ -356,6 +387,7 @@ class FaSTMM:
                     restart=restart,
                     max_iter=max_iter,
                     truncation_formula=truncation_formula,
+                    truncation_order=truncation_order,
                     n_threads=n_threads,
                 )
             case _:
@@ -372,6 +404,7 @@ class FaSTMM:
         restart,
         max_iter,
         truncation_formula,
+        truncation_order,
         n_threads,
     ):
         _validate_formulation_v2(formulation)
@@ -389,6 +422,7 @@ class FaSTMM:
             restart=restart,
             max_iter=max_iter,
             truncation_formula=truncation_formula,
+            truncation_order=truncation_order,
             n_threads=n_threads,
         )
         result["k_medium"] = k_medium
