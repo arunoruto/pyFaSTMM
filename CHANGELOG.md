@@ -7,6 +7,68 @@ next to it.
 
 <!-- version list -->
 
+## v1.1.0 (2026-10-14)
+
+### Bug Fixes
+
+- Packages.default should stay the fastmm2 CLI, not the new pyfastmm
+  ([`a200245`](https://github.com/arunoruto/pyFaSTMM/commit/a20024596000378306389311fdaac27a7d0098b4))
+
+- Reject invalid radii before Fortran call
+  ([`a0a7eb4`](https://github.com/arunoruto/pyFaSTMM/commit/a0a7eb48fc3c5d1649509d6580f06d5a5efdd6d7))
+
+- **build**: Pass NIX_LDFLAGS rpath in driver form
+  ([`76b5e2b`](https://github.com/arunoruto/pyFaSTMM/commit/76b5e2b39c1a08ab81ed4fa528eaf92ed609037f))
+
+- **far-field**: Undo propagator attenuation in the c_sca integral
+  ([`b1774b0`](https://github.com/arunoruto/pyFaSTMM/commit/b1774b043be87ccf0a5b50bd12708089350c6544))
+
+- **solver**: Balance the GMRES system for touching deep-Rayleigh spheres
+  ([`84bf022`](https://github.com/arunoruto/pyFaSTMM/commit/84bf0227c71c0b86935607af239745bfd503d0d2))
+
+### Build System
+
+- Licence files, PEP 639 metadata and release configuration
+  ([`6701bc8`](https://github.com/arunoruto/pyFaSTMM/commit/6701bc80309c6f6255789100c495df8d73aa224e))
+
+### Features
+
+- Expose alternate per-sphere truncation formula (opt-in)
+  ([`d7ddeb1`](https://github.com/arunoruto/pyFaSTMM/commit/d7ddeb1ed133977a6504b5b1fa67591fd4e07c93))
+
+- Package pyfastmm's Python bindings as a real Nix flake output
+  ([`30b3a0d`](https://github.com/arunoruto/pyFaSTMM/commit/30b3a0da997571fb843b4ff462484f132c988baa))
+
+- **api**: Physical cross sections by default, selectable convention
+  ([`83f356c`](https://github.com/arunoruto/pyFaSTMM/commit/83f356c6601d62b54963ff07a02e6850cdc3be93))
+
+- **api**: Store validated results on FaSTMM.results
+  ([`6c09c47`](https://github.com/arunoruto/pyFaSTMM/commit/6c09c4716007a526dd7a9acf7cdd33be8c131365))
+
+- **bench**: Add solve/sweep benchmark harness
+  ([`d214cc2`](https://github.com/arunoruto/pyFaSTMM/commit/d214cc20418e4d456073c5ffdeb191abf3c5a880))
+
+- **build**: Add PYFASTMM_F90FLAGS local tuning knob
+  ([`8db7208`](https://github.com/arunoruto/pyFaSTMM/commit/8db72089eea3c9296de411c2d86e2f0ba8a5e318))
+
+- **config**: Add concurrent wavelength sweeps
+  ([`5f25d57`](https://github.com/arunoruto/pyFaSTMM/commit/5f25d57e4f7ee4647f0b14fd5676bc98cb06c983))
+
+- **dask**: Add optional distributed sweeps
+  ([`ce69884`](https://github.com/arunoruto/pyFaSTMM/commit/ce69884ca433eb7eb8be1c13973ce190b0183c54))
+
+- **solver**: Accept an explicit per-sphere truncation order
+  ([`61b96bb`](https://github.com/arunoruto/pyFaSTMM/commit/61b96bb909c73bc48ece854926026e400cfc0fdb))
+
+### Refactoring
+
+- Export SweepConfig, read __version__ from package metadata
+  ([`e565387`](https://github.com/arunoruto/pyFaSTMM/commit/e565387c91dc368ffa2769e3d6b60cc6872d9534))
+
+- **api**: Make the MSTM medium cross-section factor private
+  ([`4ee1a04`](https://github.com/arunoruto/pyFaSTMM/commit/4ee1a042ec5ccfd1a97f978690b5bb28acbb3a83))
+
+
 ## 1.1.0 release notes
 
 Host media, a class-based API, threading control and sweeps, plus fixes to

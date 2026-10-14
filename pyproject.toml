@@ -1,6 +1,6 @@
 [project]
 name = "pyfastmm"
-version = "1.0.0"
+version = "1.1.0"
 description = "Python bindings for FaSTMM2 (Fast Superposition T-Matrix Method, MLFMM-accelerated)"
 readme = "README.md"
 requires-python = ">=3.11"
