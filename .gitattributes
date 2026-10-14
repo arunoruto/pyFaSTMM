@@ -1,0 +1,11 @@
+# Development-only files left out of the sdist (meson dist uses git archive).
+# Everything the build needs (meson.build, pyproject.toml, src/, tools/,
+# external/fastmm2/, licences) stays in.
+.github/ export-ignore
+.gitignore export-ignore
+.python-version export-ignore
+AGENTS.md export-ignore
+benchmarks/ export-ignore
+devenv.* export-ignore
+flake.* export-ignore
+uv.lock export-ignore

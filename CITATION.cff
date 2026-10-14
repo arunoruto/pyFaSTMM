@@ -1,0 +1,57 @@
+cff-version: 1.2.0
+message: >-
+  If you use pyFaSTMM, please cite the FaSTMM2 papers listed under
+  references, and this software.
+title: pyFaSTMM
+abstract: >-
+  Python bindings for FaSTMM2, an MLFMM-accelerated superposition T-matrix
+  solver for electromagnetic scattering from clusters of spheres.
+type: software
+authors:
+  - family-names: Arnaut
+    given-names: Mirza
+    email: mirza.arnaut@tu-dortmund.de
+    affiliation: TU Dortmund University
+repository-code: "https://github.com/arunoruto/pyFaSTMM"
+url: "https://pypi.org/project/pyfastmm/"
+license: MIT
+keywords:
+  - T-matrix
+  - light scattering
+  - MLFMM
+  - aggregates
+references:
+  - type: software
+    title: FaSTMM2
+    authors:
+      - family-names: Markkanen
+        given-names: Johannes
+    repository-code: "https://bitbucket.org/planetarysystemresearch/fastmm2"
+    license: BSD-3-Clause
+  - type: article
+    title: >-
+      Fast superposition T-matrix solution for clusters with
+      arbitrarily-shaped constituent particles
+    authors:
+      - family-names: Markkanen
+        given-names: Johannes
+      - family-names: Yuffa
+        given-names: Alex J.
+    journal: Journal of Quantitative Spectroscopy and Radiative Transfer
+    volume: 189
+    start: 181
+    end: 188
+    year: 2017
+    doi: 10.1016/j.jqsrt.2016.11.004
+  - type: article
+    title: >-
+      Surface-integral-equation solution for solid particles with
+      wavelength-scale surface roughness
+    authors:
+      - family-names: Markkanen
+        given-names: Johannes
+    journal: Journal of Quantitative Spectroscopy and Radiative Transfer
+    volume: 341
+    start: 109467
+    year: 2025
+    doi: 10.1016/j.jqsrt.2025.109467
