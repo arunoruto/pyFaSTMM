@@ -1,6 +1,6 @@
-# CLAUDE.md
+# AGENTS.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+Guidance for AI agents (and humans) working on pyFaSTMM.
 
 ## What this is
 
@@ -69,7 +69,7 @@ chained on top of `mie-far-field-distance-fix.patch`'s output rather than merged
   the real `RR**2` factor (Mueller/Jones divide out the full complex exponential; the Csca integral didn't),
   which suppressed `c_sca` by up to e^-600 ≈ 1e-260 in absorbing media. No-op for real k.
 - `*-n-threads-threading` (solver, matvec_adaptive, T_matrix, orientation_averaging, mie) — thread `n_threads`
-  (and `truncation_formula`) explicitly through every reachable `!$omp parallel` region, replacing the
+  (and the truncation choice) explicitly through every reachable `!$omp parallel` region, replacing the
   `omp_set_num_threads()` / module-global state upstream relied on. **This is what makes `!f2py threadsafe`
   (GIL release) on the three wrapper entry points correct**; without it, two Python threads racing to set
   different values would silently corrupt each other's physics.
@@ -93,7 +93,7 @@ Three layers, each building on the one below — put shared physics logic at the
   Also the shared host-medium helpers (`eps_relative_to_medium`, `k_in_medium`, `medium_flux_norm`,
   `eps_from_index`, `resolve_n_threads`).
 - `_cluster.py` — `FaSTMM`: ergonomic class API taking refractive indices and a vacuum wavelength, applying the
-  medium transform, incidence rotation, and flux-normalization correction. `version` (which solver) is a
+  medium transform, incidence rotation, and the cross-section convention. `version` (which solver) is a
   separate axis from `formulation` (0=STMM/1=FaSTMM/2=FaSTMM2 within a version) — two nested `match` checks,
   deliberately not one flat list. Stores each outcome on `self.results` as a validated pydantic model
   (`_results.py`: `SolveResult`/`TMatrixResult` — finiteness-checked, so NaN physics fails loudly at the
@@ -117,8 +117,13 @@ Three layers, each building on the one below — put shared physics logic at the
 - FaSTMM2 has no medium input and no incident-angle input. A host medium is emulated by transforming both `eps`
   and `k`; a tilted beam is emulated by **rotating the cluster** (`R = Ry @ Rz` — the other order was measured
   ~1.3% off against MSTM when both angles are nonzero).
-- `medium_flux_norm` applies to all four cross sections, `c_sca` included (since the far-field attenuation
-  fix: raw `c_sca` == raw `c_ext - c_abs` for lossless media, so consistency forces the same factor).
+- Cross sections are **physical** by default (per unit irradiance in the host; a sphere in a host equals Mie
+  with `m/n_host`, `Q_ext -> 2` for large absorbers). `cross_section_convention="mstm"` multiplies all four
+  (`c_sca` included) by `medium_flux_norm(n_host) = Re(n_host)`, MSTM's medium mode. Raw `FaSTMM2.solve()`
+  is always physical.
+- Truncation: `truncation_formula` is 0 or 1 (ka-based formulas); `truncation_order` (>= 2) is an explicit
+  per-sphere order and overrides it. The Fortran wrapper takes one integer (0/1 formula, >= 2 explicit
+  order); `_fortran_truncation()` in `_fastmm.py` does the encoding.
 - `n_threads` defaults to **1**, not "all cores", at every layer — callers commonly run sweeps under their own
   process parallelism and would otherwise oversubscribe. It accepts a positive int (absolute), a float in
   `(0, 1]` (fraction of `cpu_count`), or a negative value (offset from `cpu_count`); `0` raises.

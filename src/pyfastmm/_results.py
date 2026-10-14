@@ -4,8 +4,7 @@
 instance (``FaSTMM.results``) as one of these pydantic models -- attribute
 access with integrated validation, instead of a stringly-typed dict. The
 methods' *return values* stay plain dicts (``to_dict()``'s output),
-keeping every existing caller -- SweepConfig.run_resolved(), spcwth,
-t-bench's adapter -- working unchanged.
+so dict-based callers such as SweepConfig.run_resolved() work unchanged.
 
 The validation is not decorative: ``mueller``/``jones``/T-matrix blocks
 are checked finite at construction, so a solve that silently produced
@@ -13,10 +12,10 @@ NaN physics (exactly what the pre-``mie-far-field-distance-fix`` RR bug
 did for every absorbing medium -- all-NaN Mueller while cross sections
 stayed plausible) now fails loudly at the source instead of surfacing as
 corrupt science three scripts downstream. Deliberately *not* validated:
-cross-section positivity -- the known ~0.1-0.2% deep-Rayleigh precision
-floor can put c_abs marginally above c_ext (see space-weathering's
-PLAN.md), and rejecting that would turn a characterized numerical floor
-into spurious hard errors.
+cross-section positivity -- the ~0.1-0.2% precision floor in the
+deep-Rayleigh regime can put c_abs marginally above c_ext, and rejecting
+that would turn a characterized numerical floor into spurious hard
+errors.
 """
 
 from __future__ import annotations
@@ -40,8 +39,9 @@ class _ResultBase(BaseModel):
 
 class SolveResult(_ResultBase):
     """One ``FaSTMM.solve()`` outcome. ``jones`` is only present for
-    fixed orientation (``N_ave == 0``); cross sections carry the host-
-    medium flux normalization already applied (see ``FaSTMM.solve()``)."""
+    fixed orientation (``N_ave == 0``); cross sections follow the
+    ``cross_section_convention`` the solve was run with (see
+    ``FaSTMM.solve()``)."""
 
     mueller: np.ndarray
     jones: np.ndarray | None = None

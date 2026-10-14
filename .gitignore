@@ -302,3 +302,6 @@ vcpkg_installed/
 # test output & cache
 Testing/
 .cache/
+
+# Private notes, never published
+TODO-AI.md

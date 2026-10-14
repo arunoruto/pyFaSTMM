@@ -19,9 +19,8 @@ and finer tasks would need Fortran-level splitting that doesn't exist.
 
 Workers must be able to ``import pyfastmm`` (compiled extension included)
 -- on a remote cluster that means shipping a wheel built for the
-*worker's* platform/ABI (see ``[tool.cibuildwheel]`` and, for a worked
-example, spcwth's ``dask_setup.py``, which installs the wheel on every
-worker before submitting). The local ``devenv up`` scheduler/workers
+*worker's* platform/ABI (see ``[tool.cibuildwheel]``), e.g. by
+installing the wheel on every worker before submitting. The local ``devenv up`` scheduler/workers
 (see devenv.nix's ``processes``) share this project's venv, so they can
 already import it.
 
