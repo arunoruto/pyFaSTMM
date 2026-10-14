@@ -1,32 +1,14 @@
 """Smoke test for the f2py extension itself (not the Python-facing API).
 
-Skipped entirely if the extension hasn't been built.
+Skipped if the extension cannot be imported.
 """
-
-import glob
-import os
 
 import numpy as np
 import pytest
 
-_PROJ_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-_EXT_GLOB = os.path.join(_PROJ_ROOT, "src", "pyfastmm", "_fastmm_ext*.so")
-
-pytestmark = pytest.mark.skipif(
-    not glob.glob(_EXT_GLOB),
-    reason="f2py extension not built. Run 'make f2py-ext' first.",
-)
-
 
 def _import_ext():
-    import importlib
-    import sys
-
-    sys.path.insert(0, os.path.join(_PROJ_ROOT, "src"))
-    import pyfastmm._fastmm_ext as ext
-
-    importlib.reload(ext)
-    return ext
+    return pytest.importorskip("pyfastmm._fastmm_ext")
 
 
 def test_fastmm2_solve_fixed_single_sphere():
