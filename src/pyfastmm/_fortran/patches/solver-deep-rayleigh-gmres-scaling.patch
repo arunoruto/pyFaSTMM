@@ -1,0 +1,135 @@
+--- a/external/fastmm2/src/solver.f90
++++ b/external/fastmm2/src/solver.f90
+@@ -613,8 +613,44 @@
+ complex(dp) :: temp(2), tmp, hr
+ complex(dp) :: temp_2(2), tmp_2, hr_2
+ 
++! Jacobi balancing of the linear system. In the deep-Rayleigh regime
++! (x = k*r << 1) the raw one-center system spans a dynamic range of
++! |t_n| * |h_{n+nu}(kd)| ~ x^{2n+1} * (kd)^-(n+nu+1): at Nmax=13 and
++! x ~ 0.03 its measured rcond is ~1e-60, i.e. numerically singular in
++! double precision, and any solver's answer then depends on its
++! iteration path (this broke rotational invariance and biased cross
++! sections by factors of 2-4 for touching deep-Rayleigh clusters).
++! Solving the similarity-transformed system S^-1 (I - T A) S with
++! S = diag(sqrt|t_n|) is exact in exact arithmetic and collapses the
++! dynamic range, so the GMRES answer becomes solver-path independent.
++! Only built for the Mie-sphere path (size(Tmat)==0, the only path the
++! Python extension exercises); with precomputed T-matrices S stays 1.
++complex(dp), dimension(:), allocatable :: sdiag, mxs, mxs2, bs, bs2
++complex(dp), dimension(:), allocatable :: sa_nm, sb_nm, sc_nm, sd_nm
++integer :: s_sph, s_nm, s_i
++
+ N = size(b)
+ 
++allocate(sdiag(N), mxs(N), mxs2(N), bs(N), bs2(N))
++sdiag = dcmplx(1.0d0, 0.0d0)
++if (size(Tmat) == 0) then
++   do s_sph = 1, size(sphere)
++      s_nm = (sphere(s_sph)%Nmax+1)**2 - 1
++      allocate(sa_nm(s_nm), sb_nm(s_nm), sc_nm(s_nm), sd_nm(s_nm))
++      call mie_coeff_nm(sphere(s_sph)%Nmax, real(kk)*sphere(s_sph)%r, &
++           sqrt(sphere(s_sph)%eps_r), sa_nm, sb_nm, sc_nm, sd_nm)
++      ! the a-block carries M-type waves whose Mie coefficient is b_n,
++      ! and vice versa -- same pairing matvecI_mlfmm2/rhs2_xy use.
++      do s_i = 1, s_nm
++         sdiag(sphere(s_sph)%ind_a1 + s_i - 1) = sqrt(abs(sb_nm(s_i)))
++         sdiag(sphere(s_sph)%ind_b1 + s_i - 1) = sqrt(abs(sa_nm(s_i)))
++      end do
++      deallocate(sa_nm, sb_nm, sc_nm, sd_nm)
++   end do
++   ! an index-matched ("ghost") sphere has t_n == 0; keep S nonsingular
++   where (abs(sdiag) == 0.0d0) sdiag = dcmplx(1.0d0, 0.0d0)
++end if
++
+ err_tol = tol
+ max_iter = restart ! restart number
+ m = maxit ! number of iterations / restarts
+@@ -627,14 +663,20 @@
+ !call normalize_coeff(sphere, kk, b, 1)
+ !call normalize_coeff(sphere, kk, b2, 1)
+ 
+-mx = b ! Initial guess
++! work in the scaled variables throughout: bs = S^-1 b, x_s = S^-1 x,
++! operator applications wrap matvecI_mlfmm2 with S / S^-1 (see below);
++! x is scaled back to physical coefficients right before returning.
++bs = b / sdiag
++bs2 = b2 / sdiag
++
++mx = bs ! Initial guess
+ x=mx
+ 
+-mx2 = b2 ! Initial guess
++mx2 = bs2 ! Initial guess
+ x2=mx2
+ 
+-b_norm = dble(sqrt(dot_product(b,b)))
+-b_norm_2 = dble(sqrt(dot_product(b2,b2)))
++b_norm = dble(sqrt(dot_product(bs,bs)))
++b_norm_2 = dble(sqrt(dot_product(bs2,bs2)))
+ 
+ 
+ 
+@@ -679,10 +721,14 @@
+    mx2 = x2
+    !call matvecI(sphere, kk, mx, Ax)
+   
+-   call matvecI_mlfmm2(sphere, otree, Tmat, kk, mx, Ax, mx2, Ax2, n_threads)
+-  
+-   r = b-Ax
+-   r2 = b2 - Ax2
++   mxs = mx * sdiag
++   mxs2 = mx2 * sdiag
++   call matvecI_mlfmm2(sphere, otree, Tmat, kk, mxs, Ax, mxs2, Ax2, n_threads)
++   Ax = Ax / sdiag
++   Ax2 = Ax2 / sdiag
++
++   r = bs-Ax
++   r2 = bs2 - Ax2
+ 
+    !do i = 1, size(Ax)
+    !   print*, Ax(i),mx(i)
+@@ -717,8 +763,12 @@
+       !call matvecI(sphere, kk, mx, Ax)
+ 
+     
+-      call matvecI_mlfmm2(sphere,otree, Tmat,kk, mx, Ax, mx2, Ax2, n_threads)
+-     
++      mxs = mx * sdiag
++      mxs2 = mx2 * sdiag
++      call matvecI_mlfmm2(sphere,otree, Tmat,kk, mxs, Ax, mxs2, Ax2, n_threads)
++      Ax = Ax / sdiag
++      Ax2 = Ax2 / sdiag
++
+       w = Ax
+       w2 = Ax2
+ 
+@@ -859,10 +909,14 @@
+ 
+    !call matvecI(sphere, kk, mx, Ax)
+   
+-   call matvecI_mlfmm2(sphere,otree, Tmat, kk, x, Ax, x2, Ax2, n_threads)
+-   
+-   r = b - Ax
+-   r2 = b2 - Ax2
++   mxs = x * sdiag
++   mxs2 = x2 * sdiag
++   call matvecI_mlfmm2(sphere,otree, Tmat, kk, mxs, Ax, mxs2, Ax2, n_threads)
++   Ax = Ax / sdiag
++   Ax2 = Ax2 / sdiag
++
++   r = bs - Ax
++   r2 = bs2 - Ax2
+    
+    
+    print *, 'Restart GMRES',abs(sqrt(dot_product(r,r))) / b_norm
+@@ -895,6 +949,9 @@
+ !call normalize_coeff(sphere, kk, x, -1)
+ !call normalize_coeff(sphere, kk, x2, -1)
+ 
++! back to physical (unscaled) coefficients
++x = x * sdiag
++x2 = x2 * sdiag
+ 
+ end subroutine gmres_mlfmm2
+ 

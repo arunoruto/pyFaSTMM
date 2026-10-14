@@ -23,8 +23,11 @@ in the Mueller matrix's bilinear Si*conjg(Sj) combinations but not in
 the raw amplitudes themselves, so a large absolute difference there
 (order 1, when |Si| ~ O(1-10) for this test cluster) is expected and
 not evidence of a bug -- loosened accordingly. The T-matrix comparison
-is untouched (compute_T_matrix doesn't evaluate the far field at RR at
-all) and still matches to ~1e-16.
+(compute_T_matrix doesn't evaluate the far field at RR at all) matched
+to ~1e-16 while both sides shared the identical GMRES path bit-for-bit;
+since solver-deep-rayleigh-gmres-scaling.patch the extension iterates
+the Jacobi-balanced system instead, so T-matrix elements agree with the
+unpatched CLI only to GMRES-iteration-noise level (~1e-8 abs here).
 
 Note on HDF5 array layout: h5py writes/reads numpy's native row-major
 order, but FaSTMM2's Fortran HDF5 I/O reads/writes column-major -- so a
@@ -170,7 +173,14 @@ def test_tmatrix_matches_cli(tmp_path):
     )
 
     assert result["Taa"].shape == (get_tmatrix_size(8), get_tmatrix_size(8))
-    np.testing.assert_allclose(result["Taa"], Taa_cli, atol=1e-10)
-    np.testing.assert_allclose(result["Tab"], Tab_cli, atol=1e-10)
-    np.testing.assert_allclose(result["Tba"], Tba_cli, atol=1e-10)
-    np.testing.assert_allclose(result["Tbb"], Tbb_cli, atol=1e-10)
+    # atol was 1e-10 when the extension and the CLI shared the identical
+    # GMRES path bit-for-bit. Since solver-deep-rayleigh-gmres-scaling.patch
+    # the extension iterates the Jacobi-balanced system instead, so the two
+    # solutions agree only to GMRES-tolerance-level iteration noise (~1e-8
+    # abs on tiny high-order elements here), not to machine precision.
+    # Physics-level agreement (Mueller, cross sections) is asserted at full
+    # sharpness elsewhere in this file.
+    np.testing.assert_allclose(result["Taa"], Taa_cli, atol=1e-7)
+    np.testing.assert_allclose(result["Tab"], Tab_cli, atol=1e-7)
+    np.testing.assert_allclose(result["Tba"], Tba_cli, atol=1e-7)
+    np.testing.assert_allclose(result["Tbb"], Tbb_cli, atol=1e-7)

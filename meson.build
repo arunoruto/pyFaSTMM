@@ -139,6 +139,31 @@ orientation_averaging_patched = custom_target(
   command: [py, files('tools' / 'apply_patch.py'), '@INPUT0@', '@INPUT1@', '@OUTPUT@'],
 )
 
+# Chained on top of solver_patched's own output (same chaining pattern as
+# the mie patches below): balance the GMRES system before iterating.
+#
+# In the deep-Rayleigh regime (size parameter x << 1) with touching
+# spheres, the one-center T-matrix system FaSTMM2 solves spans a dynamic
+# range of ~|t_n| * |h_{n+nu}(kd)| ~ x^{2n+1} * (kd)^-(n+nu+1) -- measured
+# rcond ~ 1e-60 at Nmax=13, x~0.03. Every double-precision solve of the
+# raw system is then solver-path-dependent (LU vs GMRES vs restart count
+# give different "solutions", all with tiny residuals), which broke
+# rotational invariance and biased cross sections by 2-4x against
+# MSTM4/analytic references. The patch solves the Jacobi-balanced system
+# S^-1 (I - T A) S with S = diag(sqrt|t_n|) instead -- the same device
+# MSTM uses -- which is an exact similarity transform (identical solution
+# in exact arithmetic) with bounded conditioning.
+# See TODO-AI.md section 2.6 for the full diagnosis.
+solver_scaled_patched = custom_target(
+  'solver-scaled-patched',
+  input: [
+    solver_patched,
+    patches_dir / 'solver-deep-rayleigh-gmres-scaling.patch',
+  ],
+  output: 'solver_scaled.f90',
+  command: [py, files('tools' / 'apply_patch.py'), '@INPUT0@', '@INPUT1@', '@OUTPUT@'],
+)
+
 # Chained on top of mie_patched's own output (not the pristine file) --
 # keeps the far-field-distance-fix patch and this one as two separate,
 # independently-reviewable concerns rather than folding both into one.
@@ -191,7 +216,7 @@ f2py_sources = [
   fastmm2_dir / 'octtree_adaptive.f90',
   fastmm2_dir / 'interpolation.f90',
   matvec_adaptive_patched,
-  solver_patched,
+  solver_scaled_patched,
   orientation_averaging_patched,
   t_matrix_patched,
   wrapper_dir / 'fastmm2_f2py.f90',
