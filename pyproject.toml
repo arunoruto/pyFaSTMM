@@ -98,10 +98,8 @@ minor_tags = ["feat"]
 patch_tags = ["fix", "perf"]
 
 [tool.semantic_release.changelog]
-# New releases are inserted below the `<!-- version list -->` marker in
-# CHANGELOG.md. A release whose heading ("## vX.Y.Z (...)") is already
-# below the marker is left alone, so a hand-written entry wins over the
-# generated one.
+# Inserts each release's entry below the `<!-- version list -->` marker
+# and leaves the rest of CHANGELOG.md as written (see its header).
 mode = "update"
 exclude_commit_patterns = [
   'Merge pull request #\d+',
